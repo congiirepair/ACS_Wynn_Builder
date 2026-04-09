@@ -1,0 +1,7 @@
+<RCC>
+    <qresource prefix="/">
+        <file>wynn_bg.png</file>
+        <file>logo.png</file>
+        <file>stations_bg.png</file>
+    </qresource>
+</RCC>

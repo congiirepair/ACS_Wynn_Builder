@@ -1,0 +1,130 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>ACS_Wynn_BuilderClass</class>
+ <widget class="QMainWindow" name="ACS_Wynn_BuilderClass">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>800</width>
+    <height>820</height>
+   </rect>
+  </property>
+  <property name="windowTitle"><string>ACS Network Deployer</string></property>
+  <widget class="QWidget" name="centralWidget">
+   <layout class="QVBoxLayout" name="mainLayout">
+    <property name="leftMargin"><number>20</number></property>
+    <property name="topMargin"><number>20</number></property>
+    <property name="rightMargin"><number>20</number></property>
+    <property name="bottomMargin"><number>20</number></property>
+    <property name="spacing"><number>15</number></property>
+    
+    <item>
+     <widget class="QFrame" name="card1">
+      <layout class="QGridLayout" name="gridLayout1">
+       <property name="leftMargin"><number>15</number></property><property name="topMargin"><number>15</number></property><property name="rightMargin"><number>15</number></property><property name="bottomMargin"><number>15</number></property>
+       <item row="0" column="0"><widget class="QLabel"><property name="text"><string>Profile Name:</string></property></widget></item>
+       <item row="0" column="1"><widget class="QLineEdit" name="entry_profile_name"/></item>
+       <item row="1" column="0"><widget class="QLabel"><property name="text"><string>Broadcast SSID:</string></property></widget></item>
+       <item row="1" column="1"><widget class="QLineEdit" name="entry_essid"/></item>
+       <item row="2" column="0"><widget class="QLabel"><property name="text"><string>Path:</string></property></widget></item>
+       <item row="2" column="1"><widget class="QLineEdit" name="entry_path"/></item>
+       <item row="3" column="0"><widget class="QLabel"><property name="text"><string>Role:</string></property></widget></item>
+       <item row="3" column="1"><widget class="QLineEdit" name="entry_role"/></item>
+       <item row="0" column="2"><widget class="QLabel"><property name="text"><string>VLAN ID:</string></property></widget></item>
+       <item row="0" column="3"><widget class="QLineEdit" name="entry_vlan"/></item>
+       <item row="1" column="2"><widget class="QLabel"><property name="text"><string>Authentication:</string></property></widget></item>
+       <item row="1" column="3"><widget class="QComboBox" name="combo_auth"/></item>
+       <item row="2" column="2"><widget class="QLabel"><property name="text"><string>PSK:</string></property></widget></item>
+       <item row="2" column="3"><widget class="QLineEdit" name="entry_psk"/></item>
+       <item row="3" column="2" colspan="2"><widget class="QCheckBox" name="chk_hide_ssid"><property name="text"><string>Hide SSID</string></property></widget></item>
+      </layout>
+     </widget>
+    </item>
+
+    <item>
+     <widget class="QTabWidget" name="siteTabs">
+      <property name="currentIndex"><number>0</number></property>
+      
+      <widget class="QWidget" name="tabWynn">
+       <attribute name="title"><string>Wynn &amp; Encore</string></attribute>
+       <layout class="QVBoxLayout">
+        <item>
+         <widget class="QFrame" name="card2">
+          <layout class="QGridLayout" name="gridLayout2">
+           <item row="0" column="0"><widget class="QComboBox" name="combo_1"/></item><item row="0" column="1"><widget class="QComboBox" name="combo_2"/></item><item row="0" column="2"><widget class="QComboBox" name="combo_3"/></item>
+           <item row="1" column="0"><widget class="QComboBox" name="combo_4"/></item><item row="1" column="1"><widget class="QComboBox" name="combo_5"/></item><item row="1" column="2"><widget class="QComboBox" name="combo_6"/></item>
+           <item row="2" column="0"><widget class="QComboBox" name="combo_7"/></item><item row="2" column="1"><widget class="QComboBox" name="combo_8"/></item><item row="2" column="2"><widget class="QComboBox" name="combo_9"/></item>
+           <item row="3" column="0"><widget class="QComboBox" name="combo_10"/></item>
+          </layout>
+         </widget>
+        </item>
+        <item>
+         <widget class="QFrame" name="card3">
+          <layout class="QHBoxLayout" name="horizontalLayout1">
+           <item><widget class="QCheckBox" name="chk_wynn_legacy"><property name="text"><string>Wynn Legacy</string></property></widget></item>
+           <item><widget class="QCheckBox" name="chk_encore_conv"><property name="text"><string>Encore Conv</string></property></widget></item>
+           <item><widget class="QCheckBox" name="chk_wynn_exp"><property name="text"><string>Expansion</string></property></widget></item>
+          </layout>
+         </widget>
+        </item>
+       </layout>
+      </widget>
+
+      <widget class="QWidget" name="tabStations">
+       <attribute name="title"><string>Stations Casinos</string></attribute>
+       <layout class="QVBoxLayout">
+        <item>
+         <widget class="QFrame" name="card2_stations">
+          <layout class="QGridLayout" name="gridLayout3">
+           <item row="0" column="0"><widget class="QComboBox" name="s_combo_1"/></item><item row="0" column="1"><widget class="QComboBox" name="s_combo_2"/></item><item row="0" column="2"><widget class="QComboBox" name="s_combo_3"/></item>
+           <item row="1" column="0"><widget class="QComboBox" name="s_combo_4"/></item><item row="1" column="1"><widget class="QComboBox" name="s_combo_5"/></item><item row="1" column="2"><widget class="QComboBox" name="s_combo_6"/></item>
+           <item row="2" column="0"><widget class="QComboBox" name="s_combo_7"/></item><item row="2" column="1"><widget class="QComboBox" name="s_combo_8"/></item><item row="2" column="2"><widget class="QComboBox" name="s_combo_9"/></item>
+           <item row="3" column="0"><widget class="QComboBox" name="s_combo_10"/></item>
+          </layout>
+         </widget>
+        </item>
+        <item>
+         <widget class="QFrame" name="card3_stations">
+          <layout class="QHBoxLayout" name="horizontalLayout3">
+           <item><widget class="QCheckBox" name="chk_s_redrock"><property name="text"><string>Red Rock</string></property></widget></item>
+           <item><widget class="QCheckBox" name="chk_s_gvr"><property name="text"><string>GVR</string></property></widget></item>
+           <item><widget class="QCheckBox" name="chk_s_durango"><property name="text"><string>Durango</string></property></widget></item>
+          </layout>
+         </widget>
+        </item>
+       </layout>
+      </widget>
+     </widget>
+    </item>
+
+    <item>
+     <widget class="QFrame" name="card4">
+      <layout class="QHBoxLayout" name="horizontalLayoutSSH">
+       <item><widget class="QLabel"><property name="text"><string>Target IP:</string></property></widget></item>
+       <item><widget class="QLineEdit" name="entry_ip"/></item>
+       <item><widget class="QLabel"><property name="text"><string>User:</string></property></widget></item>
+       <item><widget class="QLineEdit" name="entry_user"/></item>
+       <item><widget class="QLabel"><property name="text"><string>Pass:</string></property></widget></item>
+       <item><widget class="QLineEdit" name="entry_ssh_pass"><property name="echoMode"><enum>QLineEdit::Password</enum></property></widget></item>
+       <item><widget class="QPushButton" name="btn_deploy"><property name="text"><string>DEPLOY</string></property></widget></item>
+      </layout>
+     </widget>
+    </item>
+
+    <item>
+     <layout class="QHBoxLayout" name="horizontalLayout2">
+      <item><widget class="QPushButton" name="btn_generate"><property name="text"><string>GENERATE</string></property></widget></item>
+      <item><widget class="QPushButton" name="btn_remove"><property name="text"><string>REMOVE</string></property></widget></item>
+      <item><widget class="QPushButton" name="btn_copy"><property name="text"><string>COPY</string></property></widget></item>
+      <item><widget class="QPushButton" name="btn_reset"><property name="text"><string>RESET</string></property></widget></item>
+     </layout>
+    </item>
+
+    <item>
+     <widget class="QPlainTextEdit" name="text_output"/>
+    </item>
+   </layout>
+  </widget>
+ </widget>
+</ui>

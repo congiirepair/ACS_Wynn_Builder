@@ -1,0 +1,540 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+  <class>ACS_Wynn_BuilderClass</class>
+  <widget class="QMainWindow" name="ACS_Wynn_BuilderClass">
+    <property name="geometry">
+      <rect>
+        <x>0</x>
+        <y>0</y>
+        <width>750</width>
+        <height>870</height>
+      </rect>
+    </property>
+    <property name="windowTitle">
+      <string>ACS Wifi Tool</string>
+    </property>
+    <property name="styleSheet">
+      <string notr="true">
+        /* ========================================================
+        ENTERPRISE MULTI-THEME BASE (REFINED VISIBILITY)
+        ======================================================== */
+
+        QMainWindow, QWidget#centralWidget { background-color: #0B0C0E; border: 1px solid #2D2D2D; }
+
+        #titleBar { background-color: #030712; border-bottom: 1px solid #374151; }
+        #titleLabel { color: #0078D4; font-family: 'Segoe UI Variable', 'Segoe UI'; font-size: 13px; font-weight: 700; letter-spacing: 1.5px; padding-left: 10px; }
+        #titleBar QPushButton { background-color: transparent; border: none; padding: 6px 14px; color: #9CA3AF; }
+        #titleBar QPushButton:hover { background-color: #374151; color: #FFFFFF; }
+        #btn_close:hover { background-color: #EF4444; color: #FFFFFF; }
+
+        QLabel { color: #9CA3AF; font-family: 'Segoe UI Variable'; font-size: 12px; font-weight: 600; background: transparent; }
+
+        QFrame { background-color: #1F2937; border: 1px solid #374151; border-radius: 6px; }
+
+        QLineEdit, QPlainTextEdit, QTreeWidget, QListWidget, QComboBox {
+        background-color: #030712; border: 1px solid #374151; border-radius: 4px;
+        color: #F9FAFB; padding: 4px 8px; font-family: 'Consolas', 'Segoe UI'; font-size: 12px;
+        outline: none;
+        }
+        QLineEdit:focus, QPlainTextEdit:focus { border: 1px solid #0078D4; }
+
+        /* CHECKBOX VISIBILITY */
+        QCheckBox {
+        color: #D1D5DB;
+        font-family: 'Segoe UI';
+        font-size: 12px;
+        font-weight: 500;
+        spacing: 8px;
+        background: transparent;
+        outline: none;
+        }
+        QCheckBox::indicator {
+        width: 18px; height: 18px;
+        border-radius: 4px;
+        border: 2px solid #9CA3AF;
+        background-color: #030712;
+        }
+        QCheckBox::indicator:hover {
+        border: 2px solid #0078D4;
+        background-color: #111827;
+        }
+        QCheckBox::indicator:checked {
+        background-color: #0078D4;
+        border: 2px solid #0078D4;
+        }
+
+        QPushButton#btn_wizard, QPushButton#btn_generate, QPushButton#btn_generate_cisco, QPushButton#btn_test_ssh, QPushButton#btn_open_mremote, QPushButton#btn_deploy {
+        background-color: #0078D4; color: #FFFFFF; font-weight: 700;
+        border: none; border-radius: 4px; padding: 5px 12px;
+        }
+        QPushButton#btn_wizard:hover, QPushButton#btn_generate:hover, QPushButton#btn_generate_cisco:hover, QPushButton#btn_test_ssh:hover, QPushButton#btn_open_mremote:hover, QPushButton#btn_deploy:hover {
+        background-color: #0086F0;
+        }
+        QPushButton#btn_deploy:disabled, QPushButton#btn_test_ssh:disabled, QPushButton#btn_open_mremote:disabled { background-color: #374151; color: #6B7280; }
+
+        QPushButton#btn_remove, QPushButton#btn_copy, QPushButton#btn_reset {
+        background-color: #374151; color: #F9FAFB; font-weight: 600; border-radius: 4px; padding: 5px 12px;
+        }
+        QPushButton#btn_remove:hover { background-color: #EF4444; }
+
+        QTabWidget::pane { border: 1px solid #374151; border-radius: 6px; background: transparent; top: 0px; }
+        QTabBar::tab { background-color: transparent; color: #9CA3AF; padding: 8px 24px; font-weight: 600; border-bottom: 2px solid transparent; }
+
+        QStatusBar { color: #60A5FA; background-color: #030712; border-top: 1px solid #374151; font-weight: 600; }
+      </string>
+    </property>
+    <widget class="QWidget" name="centralWidget">
+      <layout class="QVBoxLayout" name="mainLayout">
+        <property name="spacing">
+          <number>10</number>
+        </property>
+        <property name="leftMargin">
+          <number>0</number>
+        </property>
+        <property name="topMargin">
+          <number>0</number>
+        </property>
+        <property name="rightMargin">
+          <number>0</number>
+        </property>
+        <property name="bottomMargin">
+          <number>10</number>
+        </property>
+
+        <!-- TITLE BAR -->
+        <item>
+          <widget class="QFrame" name="titleBar">
+            <property name="minimumSize">
+              <size>
+                <width>0</width>
+                <height>0</height>
+              </size>
+            </property>
+            <layout class="QHBoxLayout" name="horizontalLayoutTitle">
+              <property name="leftMargin">
+                <number>10</number>
+              </property>
+              <property name="topMargin">
+                <number>0</number>
+              </property>
+              <property name="rightMargin">
+                <number>0</number>
+              </property>
+              <property name="bottomMargin">
+                <number>0</number>
+              </property>
+              <item>
+                <widget class="QLabel" name="titleLabel">
+                  <property name="text">
+                    <string>ACS WIFI TOOL</string>
+                  </property>
+                </widget>
+              </item>
+              <item>
+                <spacer name="horizontalSpacer">
+                  <property name="orientation">
+                    <enum>Qt::Horizontal</enum>
+                  </property>
+                </spacer>
+              </item>
+              <item>
+                <widget class="QPushButton" name="btn_minimize">
+                  <property name="text">
+                    <string>—</string>
+                  </property>
+                </widget>
+              </item>
+              <item>
+                <widget class="QPushButton" name="btn_close">
+                  <property name="text">
+                    <string>✕</string>
+                  </property>
+                </widget>
+              </item>
+            </layout>
+          </widget>
+        </item>
+
+        <!-- NETWORK CARD: SSID / VLAN / NODE / AUTH / PSK / ROLE -->
+        <item>
+          <widget class="QFrame" name="card1">
+            <layout class="QGridLayout" name="gridLayout1">
+              <property name="leftMargin">
+                <number>10</number>
+              </property>
+              <property name="topMargin">
+                <number>10</number>
+              </property>
+              <property name="rightMargin">
+                <number>10</number>
+              </property>
+              <property name="bottomMargin">
+                <number>10</number>
+              </property>
+              <item row="0" column="0">
+                <widget class="QLabel" name="label_ssid">
+                  <property name="text">
+                    <string>SSID:</string>
+                  </property>
+                </widget>
+              </item>
+              <item row="0" column="1">
+                <widget class="QLineEdit" name="entry_essid"/>
+              </item>
+              <item row="0" column="2">
+                <widget class="QLabel" name="label_vlan">
+                  <property name="text">
+                    <string>VLAN:</string>
+                  </property>
+                </widget>
+              </item>
+              <item row="0" column="3">
+                <widget class="QLineEdit" name="entry_vlan"/>
+              </item>
+              <item row="1" column="0">
+                <widget class="QLabel" name="label_path">
+                  <property name="text">
+                    <string>NODE:</string>
+                  </property>
+                </widget>
+              </item>
+              <item row="1" column="1">
+                <widget class="QLineEdit" name="entry_path">
+                  <property name="readOnly">
+                    <bool>true</bool>
+                  </property>
+                </widget>
+              </item>
+              <item row="1" column="2">
+                <widget class="QLabel" name="label_auth">
+                  <property name="text">
+                    <string>AUTH:</string>
+                  </property>
+                </widget>
+              </item>
+              <item row="1" column="3">
+                <widget class="QComboBox" name="combo_auth"/>
+              </item>
+              <item row="2" column="0">
+                <widget class="QLabel" name="label_psk">
+                  <property name="text">
+                    <string>PSK:</string>
+                  </property>
+                </widget>
+              </item>
+              <item row="2" column="1">
+                <widget class="QLineEdit" name="entry_psk"/>
+              </item>
+              <item row="2" column="2">
+                <widget class="QLabel" name="label_role">
+                  <property name="text">
+                    <string>ROLE:</string>
+                  </property>
+                </widget>
+              </item>
+              <item row="2" column="3">
+                <widget class="QLineEdit" name="entry_role"/>
+              </item>
+            </layout>
+          </widget>
+        </item>
+
+        <!-- SITE TABS -->
+        <item>
+          <widget class="QTabWidget" name="siteTabs">
+            <widget class="QWidget" name="tabWynn">
+              <attribute name="title">
+                <string>Wynn &amp; Encore</string>
+              </attribute>
+              <layout class="QVBoxLayout" name="verticalLayoutWynn">
+                <item>
+                  <widget class="QListWidget" name="list_wynn_aps">
+                    <property name="minimumSize">
+                      <size>
+                        <width>0</width>
+                        <height>90</height>
+                      </size>
+                    </property>
+                  </widget>
+                </item>
+                <item>
+                  <layout class="QHBoxLayout" name="wynnCheckLayout">
+                    <item>
+                      <widget class="QCheckBox" name="chk_wynn_legacy">
+                        <property name="text">
+                          <string>Legacy Buyout</string>
+                        </property>
+                      </widget>
+                    </item>
+                    <item>
+                      <widget class="QCheckBox" name="chk_encore_conv">
+                        <property name="text">
+                          <string>Encore Buyout</string>
+                        </property>
+                      </widget>
+                    </item>
+                    <item>
+                      <widget class="QCheckBox" name="chk_wynn_exp">
+                        <property name="text">
+                          <string>Expansion Buyout</string>
+                        </property>
+                      </widget>
+                    </item>
+                  </layout>
+                </item>
+              </layout>
+            </widget>
+            <widget class="QWidget" name="tabStations">
+              <attribute name="title">
+                <string>Stations Casinos</string>
+              </attribute>
+              <layout class="QVBoxLayout" name="verticalLayoutStations">
+                <item>
+                  <widget class="QListWidget" name="list_stations_aps">
+                    <property name="minimumSize">
+                      <size>
+                        <width>0</width>
+                        <height>90</height>
+                      </size>
+                    </property>
+                  </widget>
+                </item>
+                <item>
+                  <layout class="QHBoxLayout" name="statCheckLayout">
+                    <item>
+                      <widget class="QCheckBox" name="chk_s_redrock">
+                        <property name="text">
+                          <string>Red Rock Buyout</string>
+                        </property>
+                      </widget>
+                    </item>
+                    <item>
+                      <widget class="QCheckBox" name="chk_s_gvr">
+                        <property name="text">
+                          <string>GVR Buyout</string>
+                        </property>
+                      </widget>
+                    </item>
+                    <item>
+                      <widget class="QCheckBox" name="chk_s_durango">
+                        <property name="text">
+                          <string>Durango Buyout</string>
+                        </property>
+                      </widget>
+                    </item>
+                  </layout>
+                </item>
+              </layout>
+            </widget>
+          </widget>
+        </item>
+
+        <!--
+          SSH CARD — FIX (UI/UX): Restructured from a single cramped QHBoxLayout
+          to a QGridLayout with two rows. Each field now has enough horizontal space
+          to display its content without truncation at 750px window width.
+
+          Row 0: [IP label] [IP field]   [USER label] [USER field]
+          Row 1: [PASS label] [PASS field (colspan 1)] [DEPLOY button (colspan 1, right-aligned)]
+        -->
+        <item>
+          <widget class="QFrame" name="card4">
+            <layout class="QGridLayout" name="gridLayoutSSH">
+              <property name="leftMargin">
+                <number>10</number>
+              </property>
+              <property name="topMargin">
+                <number>8</number>
+              </property>
+              <property name="rightMargin">
+                <number>10</number>
+              </property>
+              <property name="bottomMargin">
+                <number>8</number>
+              </property>
+              <property name="horizontalSpacing">
+                <number>8</number>
+              </property>
+              <property name="verticalSpacing">
+                <number>6</number>
+              </property>
+
+              <!-- Single row: IP + User + Pass + Deploy -->
+              <item row="0" column="0">
+                <widget class="QLabel" name="label_ip">
+                  <property name="text">
+                    <string>IP:</string>
+                  </property>
+                  <property name="minimumSize">
+                    <size>
+                      <width>40</width>
+                      <height>0</height>
+                    </size>
+                  </property>
+                </widget>
+              </item>
+              <item row="0" column="1">
+                <widget class="QLineEdit" name="entry_ip">
+                  <property name="maximumSize">
+                    <size>
+                      <width>140</width>
+                      <height>16777215</height>
+                    </size>
+                  </property>
+                </widget>
+              </item>
+              <item row="0" column="2">
+                <widget class="QLabel" name="label_user">
+                  <property name="text">
+                    <string>USER:</string>
+                  </property>
+                  <property name="minimumSize">
+                    <size>
+                      <width>44</width>
+                      <height>0</height>
+                    </size>
+                  </property>
+                </widget>
+              </item>
+              <item row="0" column="3">
+                <widget class="QLineEdit" name="entry_user">
+                  <property name="maximumSize">
+                    <size>
+                      <width>95</width>
+                      <height>16777215</height>
+                    </size>
+                  </property>
+                </widget>
+              </item>
+              <item row="0" column="4">
+                <widget class="QLabel" name="label_pass">
+                  <property name="text">
+                    <string>PASS:</string>
+                  </property>
+                </widget>
+              </item>
+              <item row="0" column="5">
+                <widget class="QLineEdit" name="entry_ssh_pass">
+                  <property name="maximumSize">
+                    <size>
+                      <width>170</width>
+                      <height>16777215</height>
+                    </size>
+                  </property>
+                  <property name="echoMode">
+                    <enum>QLineEdit::Password</enum>
+                  </property>
+                </widget>
+              </item>
+              <item row="0" column="6">
+                <widget class="QPushButton" name="btn_deploy">
+                  <property name="minimumSize">
+                    <size>
+                      <width>88</width>
+                      <height>34</height>
+                    </size>
+                  </property>
+                  <property name="maximumSize">
+                    <size>
+                      <width>96</width>
+                      <height>34</height>
+                    </size>
+                  </property>
+                  <property name="text">
+                    <string>DEPLOY</string>
+                  </property>
+                </widget>
+              </item>
+            </layout>
+          </widget>
+        </item>
+
+        <!-- ACTION BUTTONS -->
+        <item>
+          <layout class="QHBoxLayout" name="buttonLayout">
+            <property name="spacing">
+              <number>8</number>
+            </property>
+            <item>
+              <widget class="QPushButton" name="btn_wizard">
+                <property name="text">
+                  <string>WIZARD</string>
+                </property>
+              </widget>
+            </item>
+            <item>
+              <widget class="QPushButton" name="btn_generate">
+                <property name="text">
+                  <string>GENERATE</string>
+                </property>
+              </widget>
+            </item>
+            <item>
+              <widget class="QPushButton" name="btn_generate_cisco">
+                <property name="text">
+                  <string>GEN CISCO</string>
+                </property>
+              </widget>
+            </item>
+            <item>
+              <widget class="QPushButton" name="btn_remove">
+                <property name="text">
+                  <string>REMOVE</string>
+                </property>
+              </widget>
+            </item>
+            <item>
+              <widget class="QPushButton" name="btn_test_ssh">
+                <property name="text">
+                  <string>TEST SSH</string>
+                </property>
+              </widget>
+            </item>
+            <item>
+              <widget class="QPushButton" name="btn_copy">
+                <property name="text">
+                  <string>COPY</string>
+                </property>
+              </widget>
+            </item>
+            <item>
+              <widget class="QPushButton" name="btn_open_mremote">
+                <property name="text">
+                  <string>OPEN MREMOTE</string>
+                </property>
+              </widget>
+            </item>
+            <item>
+              <widget class="QPushButton" name="btn_reset">
+                <property name="text">
+                  <string>RESET</string>
+                </property>
+              </widget>
+            </item>
+          </layout>
+        </item>
+
+        <!-- OUTPUT PANEL -->
+        <item>
+          <widget class="QPlainTextEdit" name="text_output">
+            <property name="minimumSize">
+              <size>
+                <width>0</width>
+                <height>100</height>
+              </size>
+            </property>
+            <property name="sizePolicy">
+              <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+                <horstretch>0</horstretch>
+                <verstretch>1</verstretch>
+              </sizepolicy>
+            </property>
+          </widget>
+        </item>
+
+      </layout>
+    </widget>
+  </widget>
+  <resources/>
+  <connections/>
+</ui>
