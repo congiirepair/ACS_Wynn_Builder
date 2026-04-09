@@ -41,6 +41,7 @@ $windeployqt = "C:\Qt\6.11.0\msvc2022_64\bin\windeployqt.exe"
 $solution = Join-Path $ProjectRoot "ACS_Wynn_Builder.vcxproj"
 $buildOutputDir = Join-Path $ProjectRoot "$Platform\$Configuration"
 $exePath = Join-Path $buildOutputDir "ACS_Wynn_Builder.exe"
+$localDependencyDir = Join-Path $ProjectRoot "third_party\libssh\bin"
 $localDeployDir = "C:\Users\congi\Desktop\ACS Deploy"
 $vcRedistDir = "C:\Program Files\Microsoft Visual Studio\18\Community\VC\Redist\MSVC\14.50.35710\x64\Microsoft.VC145.CRT"
 
@@ -71,15 +72,18 @@ if ($LASTEXITCODE -ne 0) {
 
 $sshCandidates = @{
     "ssh.dll" = @(
+        (Join-Path $localDependencyDir "ssh.dll"),
         (Join-Path $ProjectRoot "ssh.dll"),
         (Join-Path $localDeployDir "ssh.dll")
     )
     "libcrypto-3-x64.dll" = @(
+        (Join-Path $localDependencyDir "libcrypto-3-x64.dll"),
         (Join-Path $ProjectRoot "libcrypto-3-x64.dll"),
         (Join-Path $buildOutputDir "libcrypto-3-x64.dll"),
         (Join-Path $localDeployDir "libcrypto-3-x64.dll")
     )
     "libssl-3-x64.dll" = @(
+        (Join-Path $localDependencyDir "libssl-3-x64.dll"),
         (Join-Path $ProjectRoot "libssl-3-x64.dll"),
         (Join-Path $buildOutputDir "libssl-3-x64.dll"),
         (Join-Path $localDeployDir "libssl-3-x64.dll")

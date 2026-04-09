@@ -166,6 +166,7 @@ private:
     QString currentUser;
     QString currentPassword;
     void closeSession();
+    void checkWlanIdsPersistentInternal(bool allowReconnect);
 };
 
 // ====================================================
@@ -174,11 +175,37 @@ private:
 class WizardPage1 : public QWizardPage { Q_OBJECT public: WizardPage1(QWidget* parent = nullptr); };
 class WizardPage2 : public QWizardPage { Q_OBJECT public: WizardPage2(QWidget* parent = nullptr); };
 class WizardPageSite : public QWizardPage { Q_OBJECT public: WizardPageSite(QWidget* parent = nullptr); };
-class CiscoWizardPage1 : public QWizardPage { Q_OBJECT public: CiscoWizardPage1(const QStringList& interfaces, QWidget* parent = nullptr); };
+class CiscoConnectWizardPage : public QWizardPage {
+    Q_OBJECT
+public:
+    CiscoConnectWizardPage(class ACS_Wynn_Builder* owner,
+        QString title = QString("Step 1: Cisco Controller Connection"),
+        QWidget* parent = nullptr);
+    void initializePage() override;
+    bool isComplete() const override;
+private:
+    class ACS_Wynn_Builder* wizardOwner = nullptr;
+    QLineEdit* ipField = nullptr;
+    QLineEdit* userField = nullptr;
+    QLineEdit* passField = nullptr;
+    QLabel* statusLabel = nullptr;
+    QPushButton* connectButton = nullptr;
+    QString pageTitle;
+    void refreshState();
+};
+class CiscoWizardPage1 : public QWizardPage {
+    Q_OBJECT
+public:
+    CiscoWizardPage1(const QStringList& interfaces,
+        QString title = QString("Step 1: Cisco WLAN Details"),
+        QWidget* parent = nullptr);
+};
 class CiscoWizardPage2 : public QWizardPage {
     Q_OBJECT
 public:
-    CiscoWizardPage2(ApGroupData data, QWidget* parent = nullptr);
+    CiscoWizardPage2(ApGroupData data,
+        QString title = QString("Step 2: Cisco AP Group Selection"),
+        QWidget* parent = nullptr);
     void initializePage() override;
     QTreeWidget* apTreeWidget;
     QLineEdit* searchBox;
@@ -240,7 +267,9 @@ private:
 class CiscoWizardPage3 : public QWizardPage {
     Q_OBJECT
 public:
-    CiscoWizardPage3(CiscoWizardPage2* apPage, QWidget* parent = nullptr);
+    CiscoWizardPage3(CiscoWizardPage2* apPage,
+        QString title = QString("Step 3: Cisco Configuration Preview"),
+        QWidget* parent = nullptr);
     void initializePage() override;
     QPlainTextEdit* configPreview;
 private:
@@ -271,10 +300,17 @@ class ACS_Wynn_Builder : public QMainWindow {
 public:
     ACS_Wynn_Builder(QWidget* parent = nullptr);
     ~ACS_Wynn_Builder();
+    bool hasActiveCiscoSession() const;
+    QString activeCiscoSessionIp() const;
+    QString activeCiscoSessionUser() const;
+    void setCiscoSessionCredentials(const QString& ip, const QString& user, const QString& pass);
 
 protected:
     void mousePressEvent(QMouseEvent* event) override;
     void mouseMoveEvent(QMouseEvent* event) override;
+
+signals:
+    void ciscoSessionStateChanged();
 
 private slots:
     void on_siteTabs_currentChanged(int index);
@@ -335,8 +371,15 @@ private:
     QFrame* apGroupSelectorFrame = nullptr;
     QPushButton* btnSelectApGroups = nullptr;
     QLabel* apGroupSummaryLabel = nullptr;
+    QFrame* buyoutOptionsFrame = nullptr;
+    QWidget* wynnBuyoutOptionsRow = nullptr;
+    QWidget* stationsBuyoutOptionsRow = nullptr;
+    QWidget* ciscoBuyoutOptionsRow = nullptr;
     QPushButton* btnCheckWlanIds = nullptr;
     QFrame* ciscoFrame = nullptr;
+    QLineEdit* ciscoControllerIpField = nullptr;
+    QLineEdit* ciscoControllerUserField = nullptr;
+    QLineEdit* ciscoControllerPassField = nullptr;
     QLineEdit* ciscoCompanyName = nullptr;
     QLineEdit* ciscoRemovalDate = nullptr;
     QLineEdit* ciscoSsid = nullptr;
@@ -345,6 +388,7 @@ private:
     QLineEdit* ciscoMaxClients = nullptr;
     QComboBox* ciscoVlan = nullptr;
     QLabel* ciscoConnectionStatusLabel = nullptr;
+    QFrame* ciscoDetailsFrame = nullptr;
     QTreeWidget* tree_cisco_wynn = nullptr;
     QLineEdit* search_cisco_wynn = nullptr;
     QCheckBox* chk_cisco_legacy = nullptr;
@@ -409,6 +453,7 @@ private:
     void appendOutputText(const QString& text, const QString& title = "Generated Output");
     void applyProfilePreset(const QString& presetName, bool persistSelection = true);
     void updateApGroupSelectionSummary();
+    void updateBuyoutOptionsUi();
     void showApGroupSelectorDialog(const QString& title, QTreeWidget* sourceTree);
     QString resolveMRemotePath();
     QString mRemoteExecutablePath;

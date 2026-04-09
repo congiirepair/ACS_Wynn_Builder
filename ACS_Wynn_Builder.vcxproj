@@ -60,24 +60,26 @@
   </ImportGroup>
   <PropertyGroup Label="UserMacros" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)' == 'Debug|x64'">
+    <VcpkgEnabled>false</VcpkgEnabled>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)' == 'Release|x64'">
+    <VcpkgEnabled>false</VcpkgEnabled>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>
-      <AdditionalIncludeDirectories>C:\Users\congi\source\repos\ACS_Wynn_Builder\vcpkg\installed\x64-windows\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(MSBuildProjectDirectory)\third_party\libssh\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
-      <AdditionalLibraryDirectories>C:\Users\congi\source\repos\ACS_Wynn_Builder\vcpkg\installed\x64-windows\lib</AdditionalLibraryDirectories>
+      <AdditionalLibraryDirectories>$(MSBuildProjectDirectory)\third_party\libssh\lib</AdditionalLibraryDirectories>
       <AdditionalDependencies>ssh.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <ClCompile>
-      <AdditionalIncludeDirectories>C:\Users\congi\source\repos\ACS_Wynn_Builder\vcpkg\installed\x64-windows\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(MSBuildProjectDirectory)\third_party\libssh\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
-      <AdditionalLibraryDirectories>C:\Users\congi\source\repos\ACS_Wynn_Builder\vcpkg\installed\x64-windows\lib</AdditionalLibraryDirectories>
+      <AdditionalLibraryDirectories>$(MSBuildProjectDirectory)\third_party\libssh\lib</AdditionalLibraryDirectories>
       <AdditionalDependencies>ssh.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
@@ -139,6 +141,17 @@
   <ItemGroup>
     <None Include="ModernUpdater.qml" />
   </ItemGroup>
+  <Target Name="CopyLocalSshRuntime" AfterTargets="Build">
+    <ItemGroup>
+      <LocalSshRuntime Include="$(MSBuildProjectDirectory)\third_party\libssh\bin\ssh.dll" />
+      <LocalSshRuntime Include="$(MSBuildProjectDirectory)\third_party\libssh\bin\libcrypto-3-x64.dll" />
+      <LocalSshRuntime Include="$(MSBuildProjectDirectory)\third_party\libssh\bin\libssl-3-x64.dll" />
+    </ItemGroup>
+    <Copy SourceFiles="@(LocalSshRuntime)"
+          DestinationFolder="$(OutDir)"
+          SkipUnchangedFiles="true"
+          Condition="Exists('%(LocalSshRuntime.FullPath)')" />
+  </Target>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Condition="Exists('$(QtMsBuild)\qt.targets')">
     <Import Project="$(QtMsBuild)\qt.targets" />

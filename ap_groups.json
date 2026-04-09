@@ -153,7 +153,7 @@
         "default"
     ],
     "updater_enabled": true,
-    "updater_metadata_url": "https://gist.githubusercontent.com/congiirepair/608d6a71617c2c8fba6dd2f7ee134dcc/raw/2af487571cc744ed62c5c4c20eeb27e3a0e1e2c7/version.txt",
+    "updater_metadata_url": "https://gist.githubusercontent.com/congiirepair/608d6a71617c2c8fba6dd2f7ee134dcc/raw/version.txt",
     "updater_package_url": "https://github.com/congiirepair/ACS_Wynn_Builder/releases/download/1.0.4/ACS_Wynn_Builder_Update.zip",
     "updater_expected_sha256": "711b1f0eb54026f2cff413e14af2aab5d0b725aa64396e281cf6bdf9958d932b",
     "updater_allowed_hosts": [

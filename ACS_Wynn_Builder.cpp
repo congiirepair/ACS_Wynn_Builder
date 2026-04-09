@@ -1553,7 +1553,35 @@ void ControllerSessionManager::deployPersistent(QString script) {
 }
 
 void ControllerSessionManager::checkWlanIdsPersistent() {
+    checkWlanIdsPersistentInternal(true);
+}
+
+void ControllerSessionManager::checkWlanIdsPersistentInternal(bool allowReconnect) {
+    auto reconnectAndRetry = [&]() -> bool {
+        if (!allowReconnect || !currentCiscoMode || currentIp.trimmed().isEmpty() || currentUser.trimmed().isEmpty() || currentPassword.isEmpty())
+            return false;
+
+        const QString reconnectIp = currentIp;
+        const QString reconnectUser = currentUser;
+        const QString reconnectPassword = currentPassword;
+        const bool reconnectCiscoMode = currentCiscoMode;
+
+        emit logMessage(">>> Cisco session dropped during WLAN ID check. Attempting automatic reconnect...");
+        closeSession();
+        emit connectionStateChanged(false, reconnectCiscoMode, QString(), QString());
+        connectPersistent(reconnectIp, reconnectUser, reconnectPassword, reconnectCiscoMode);
+        if (!connected || !currentCiscoMode)
+            return false;
+
+        emit logMessage(">>> Cisco session restored. Retrying WLAN ID check...");
+        checkWlanIdsPersistentInternal(false);
+        return true;
+        };
+
     if (!connected || !session || !channel || !ssh_channel_is_open(channel) || ssh_channel_is_eof(channel)) {
+        if (reconnectAndRetry())
+            return;
+
         emit wlanIdCheckFinished(false, "No active Cisco session is available. Connect first.", QString());
         return;
     }
@@ -1578,6 +1606,9 @@ void ControllerSessionManager::checkWlanIdsPersistent() {
 
     emit logMessage(">>> Running 'show wlan summary' on active Cisco session...");
     if (writeShellLine("show wlan summary") == SSH_ERROR) {
+        if (reconnectAndRetry())
+            return;
+
         closeSession();
         emit connectionStateChanged(false, currentCiscoMode, QString(), QString());
         emit wlanIdCheckFinished(false, "Failed to send 'show wlan summary' to the Cisco controller. Please reconnect.", QString());
@@ -1603,6 +1634,9 @@ void ControllerSessionManager::checkWlanIdsPersistent() {
                 chunk.replace("--More--", "", Qt::CaseInsensitive);
                 chunk.replace("(q)uit", "", Qt::CaseInsensitive);
                 if (sendPagerContinue() == SSH_ERROR) {
+                    if (reconnectAndRetry())
+                        return;
+
                     closeSession();
                     emit connectionStateChanged(false, currentCiscoMode, QString(), QString());
                     emit wlanIdCheckFinished(false, "Cisco paging prompt appeared, but the app could not continue reading. Please reconnect.", QString());
@@ -1685,11 +1719,93 @@ WizardPageSite::WizardPageSite(QWidget* parent) : QWizardPage(parent) {
 }
 
 // ====================================================
+// CISCO WIZARD - CONNECTION PAGE
+// ====================================================
+
+CiscoConnectWizardPage::CiscoConnectWizardPage(ACS_Wynn_Builder* owner, QString title, QWidget* parent)
+    : QWizardPage(parent), wizardOwner(owner), pageTitle(std::move(title))
+{
+    setTitle(pageTitle);
+
+    QVBoxLayout* layout = new QVBoxLayout(this);
+    ipField = new QLineEdit(this);
+    userField = new QLineEdit(this);
+    passField = new QLineEdit(this);
+    passField->setEchoMode(QLineEdit::Password);
+    statusLabel = new QLabel(this);
+    statusLabel->setWordWrap(true);
+    connectButton = new QPushButton("CONNECT", this);
+
+    registerField("ip*", ipField);
+    registerField("user*", userField);
+    registerField("pass*", passField);
+
+    layout->addWidget(new QLabel("Controller IP:", this));
+    layout->addWidget(ipField);
+    layout->addWidget(new QLabel("Username:", this));
+    layout->addWidget(userField);
+    layout->addWidget(new QLabel("Password:", this));
+    layout->addWidget(passField);
+    layout->addWidget(connectButton, 0, Qt::AlignLeft);
+    layout->addWidget(statusLabel);
+    layout->addStretch(1);
+
+    connect(connectButton, &QPushButton::clicked, this, [this]() {
+        if (!wizardOwner || wizardOwner->hasActiveCiscoSession())
+            return;
+
+        wizardOwner->setCiscoSessionCredentials(
+            ipField ? ipField->text().trimmed() : QString(),
+            userField ? userField->text().trimmed() : QString(),
+            passField ? passField->text() : QString()
+        );
+        QMetaObject::invokeMethod(wizardOwner, "on_btn_test_ssh_clicked", Qt::DirectConnection);
+        refreshState();
+        });
+
+    if (wizardOwner) {
+        connect(wizardOwner, &ACS_Wynn_Builder::ciscoSessionStateChanged, this, [this]() {
+            refreshState();
+            emit completeChanged();
+            });
+    }
+}
+
+void CiscoConnectWizardPage::initializePage() {
+    if (!wizardOwner)
+        return;
+
+    const QString activeIp = wizardOwner->activeCiscoSessionIp();
+    ipField->setText(activeIp.isEmpty() ? QString("98.173.86.102") : activeIp);
+    userField->setText(wizardOwner->activeCiscoSessionUser());
+    refreshState();
+}
+
+bool CiscoConnectWizardPage::isComplete() const {
+    return wizardOwner && wizardOwner->hasActiveCiscoSession();
+}
+
+void CiscoConnectWizardPage::refreshState() {
+    const bool connected = wizardOwner && wizardOwner->hasActiveCiscoSession();
+    if (statusLabel) {
+        statusLabel->setText(connected
+            ? QString("Cisco controller connected to %1 as %2. Continue to the WLAN form.")
+            .arg(wizardOwner->activeCiscoSessionIp(),
+                wizardOwner->activeCiscoSessionUser().isEmpty() ? QString("<unknown user>") : wizardOwner->activeCiscoSessionUser())
+            : "Connect to the Cisco controller before continuing.");
+    }
+    if (connectButton) {
+        connectButton->setText(connected ? "CONNECTED" : "CONNECT");
+        connectButton->setEnabled(!connected);
+    }
+}
+
+// ====================================================
 // CISCO WIZARD — PAGE 1: WLAN DETAILS
 // ====================================================
 
-CiscoWizardPage1::CiscoWizardPage1(const QStringList& interfaces, QWidget* parent) : QWizardPage(parent) {
-    setTitle("Step 1: Cisco WLAN Details");
+CiscoWizardPage1::CiscoWizardPage1(const QStringList& interfaces, QString title, QWidget* parent) : QWizardPage(parent) {
+    setTitle(title);
 
     QGridLayout* layout = new QGridLayout(this);
     int row = 0;
@@ -1742,10 +1858,10 @@ CiscoWizardPage1::CiscoWizardPage1(const QStringList& interfaces, QWidget* paren
 // CISCO WIZARD — PAGE 2: AP GROUP SELECTION
 // ====================================================
 
-CiscoWizardPage2::CiscoWizardPage2(ApGroupData data, QWidget* parent)
+CiscoWizardPage2::CiscoWizardPage2(ApGroupData data, QString title, QWidget* parent)
     : QWizardPage(parent), apData(std::move(data))
 {
-    setTitle("Step 2: Cisco AP Group Selection");
+    setTitle(title);
 
     QVBoxLayout* layout = new QVBoxLayout(this);
     QGridLayout* bulkLayout = new QGridLayout();
@@ -1996,10 +2112,10 @@ void WizardPage5::initializePage() {
 // CISCO WIZARD — PAGE 3: CONFIG PREVIEW
 // ====================================================
 
-CiscoWizardPage3::CiscoWizardPage3(CiscoWizardPage2* apPage, QWidget* parent)
+CiscoWizardPage3::CiscoWizardPage3(CiscoWizardPage2* apPage, QString title, QWidget* parent)
     : QWizardPage(parent), p2(apPage)
 {
-    setTitle("Step 3: Cisco Configuration Preview");
+    setTitle(title);
     QVBoxLayout* l = new QVBoxLayout(this);
     configPreview = new QPlainTextEdit(this);
     new ArubaHighlighter(configPreview->document());
@@ -2114,7 +2230,7 @@ ACS_Wynn_Builder::ACS_Wynn_Builder(QWidget* parent)
     if (ui->text_output)
         ui->text_output->setVisible(true);
     if (ui->text_output)
-        ui->text_output->setMinimumHeight(100);
+        ui->text_output->setMinimumHeight(180);
 
     const QList<QPushButton*> primaryButtons = { ui->btn_wizard, ui->btn_generate, ui->btn_generate_cisco, ui->btn_test_ssh, ui->btn_open_mremote, ui->btn_deploy };
     for (QPushButton* button : primaryButtons) {
@@ -2189,15 +2305,72 @@ ACS_Wynn_Builder::ACS_Wynn_Builder(QWidget* parent)
     apGroupSelectorLayout->setContentsMargins(8, 6, 8, 6);
     apGroupSelectorLayout->setSpacing(8);
     btnSelectApGroups = new QPushButton("SELECT AP GROUPS", apGroupSelectorFrame);
-    btnCheckWlanIds = new QPushButton("CHECK WLAN IDS", apGroupSelectorFrame);
     apGroupSummaryLabel = new QLabel("Selected AP groups: 0", apGroupSelectorFrame);
     apGroupSummaryLabel->setWordWrap(true);
     apGroupSelectorLayout->addWidget(btnSelectApGroups, 0);
-    apGroupSelectorLayout->addWidget(btnCheckWlanIds, 0);
     apGroupSelectorLayout->addWidget(apGroupSummaryLabel, 1);
     ui->mainLayout->insertWidget(ui->mainLayout->indexOf(ui->card4), apGroupSelectorFrame);
     connect(btnSelectApGroups, &QPushButton::clicked, this, &ACS_Wynn_Builder::on_btn_select_ap_groups_clicked);
-    connect(btnCheckWlanIds, &QPushButton::clicked, this, &ACS_Wynn_Builder::on_btn_check_wlan_ids_clicked);
+
+    auto detachWidgetFromLayout = [&](QLayout* layout, QWidget* widget, const auto& self) -> bool {
+        if (!layout || !widget)
+            return false;
+
+        for (int i = 0; i < layout->count(); ++i) {
+            QLayoutItem* item = layout->itemAt(i);
+            if (!item)
+                continue;
+
+            if (item->widget() == widget) {
+                layout->removeWidget(widget);
+                return true;
+            }
+
+            if (QLayout* childLayout = item->layout()) {
+                if (self(childLayout, widget, self))
+                    return true;
+            }
+        }
+
+        return false;
+        };
+
+    buyoutOptionsFrame = new QFrame(this);
+    QVBoxLayout* buyoutOptionsFrameLayout = new QVBoxLayout(buyoutOptionsFrame);
+    buyoutOptionsFrameLayout->setContentsMargins(8, 0, 8, 0);
+    buyoutOptionsFrameLayout->setSpacing(0);
+
+    auto createCenteredBuyoutRow = [&](QWidget*& rowWidget) {
+        rowWidget = new QWidget(buyoutOptionsFrame);
+        QHBoxLayout* rowLayout = new QHBoxLayout(rowWidget);
+        rowLayout->setContentsMargins(0, 0, 0, 0);
+        rowLayout->setSpacing(28);
+        rowLayout->addStretch(1);
+        buyoutOptionsFrameLayout->addWidget(rowWidget);
+        return rowLayout;
+        };
+
+    QHBoxLayout* wynnBuyoutRowLayout = createCenteredBuyoutRow(wynnBuyoutOptionsRow);
+    detachWidgetFromLayout(ui->mainLayout, ui->chk_wynn_legacy, detachWidgetFromLayout);
+    detachWidgetFromLayout(ui->mainLayout, ui->chk_encore_conv, detachWidgetFromLayout);
+    detachWidgetFromLayout(ui->mainLayout, ui->chk_wynn_exp, detachWidgetFromLayout);
+    wynnBuyoutRowLayout->addWidget(ui->chk_wynn_legacy);
+    wynnBuyoutRowLayout->addWidget(ui->chk_encore_conv);
+    wynnBuyoutRowLayout->addWidget(ui->chk_wynn_exp);
+    wynnBuyoutRowLayout->addStretch(1);
+
+    QHBoxLayout* stationsBuyoutRowLayout = createCenteredBuyoutRow(stationsBuyoutOptionsRow);
+    detachWidgetFromLayout(ui->mainLayout, ui->chk_s_redrock, detachWidgetFromLayout);
+    detachWidgetFromLayout(ui->mainLayout, ui->chk_s_gvr, detachWidgetFromLayout);
+    detachWidgetFromLayout(ui->mainLayout, ui->chk_s_durango, detachWidgetFromLayout);
+    stationsBuyoutRowLayout->addWidget(ui->chk_s_redrock);
+    stationsBuyoutRowLayout->addWidget(ui->chk_s_gvr);
+    stationsBuyoutRowLayout->addWidget(ui->chk_s_durango);
+    stationsBuyoutRowLayout->addStretch(1);
+
+    QHBoxLayout* ciscoBuyoutRowLayout = createCenteredBuyoutRow(ciscoBuyoutOptionsRow);
+    buyoutOptionsFrameLayout->addStretch(0);
+    ui->mainLayout->insertWidget(ui->mainLayout->indexOf(ui->card4), buyoutOptionsFrame);
 
     ciscoFrame = new QFrame(this);
     QGridLayout* ciscoLayout = new QGridLayout(ciscoFrame);
@@ -2205,70 +2378,110 @@ ACS_Wynn_Builder::ACS_Wynn_Builder(QWidget* parent)
     ciscoLayout->setHorizontalSpacing(8);
     ciscoLayout->setVerticalSpacing(6);
 
-    QLabel* ciscoWorkflowLabel = new QLabel(
-        "Cisco Workflow:\n"
-        "1. Fill out the form except for WLAN ID.\n"
-        "2. Enter controller credentials and click CONNECT.\n"
-        "3. Click CHECK WLAN IDS.\n"
-        "4. Enter an available WLAN ID.\n"
-        "5. Click GENERATE.\n"
-        "6. Click DEPLOY.",
-        ciscoFrame);
-    ciscoWorkflowLabel->setWordWrap(true);
-    ciscoWorkflowLabel->setObjectName("ciscoWorkflowLabel");
-    ciscoLayout->addWidget(ciscoWorkflowLabel, 0, 0, 1, 4);
+    QLabel* ciscoConnectHeader = new QLabel("Cisco Controller Session", ciscoFrame);
+    ciscoConnectHeader->setObjectName("ciscoSectionHeader");
+    ciscoLayout->addWidget(ciscoConnectHeader, 0, 0, 1, 4);
 
     ciscoConnectionStatusLabel = new QLabel("Cisco Session Status: Disconnected", ciscoFrame);
     ciscoConnectionStatusLabel->setWordWrap(true);
     ciscoConnectionStatusLabel->setObjectName("ciscoConnectionStatusLabel");
     ciscoLayout->addWidget(ciscoConnectionStatusLabel, 1, 0, 1, 4);
 
+    QGridLayout* ciscoConnectionLayout = new QGridLayout();
+    ciscoConnectionLayout->setHorizontalSpacing(8);
+    ciscoConnectionLayout->setVerticalSpacing(6);
+    QLabel* ciscoIpLabel = new QLabel("IP:", ciscoFrame);
+    ciscoControllerIpField = new QLineEdit(ciscoFrame);
+    ciscoControllerIpField->setPlaceholderText("Cisco controller IP");
+    ciscoControllerIpField->setMaximumWidth(160);
+    QLabel* ciscoUserLabel = new QLabel("USER:", ciscoFrame);
+    ciscoControllerUserField = new QLineEdit(ciscoFrame);
+    ciscoControllerUserField->setPlaceholderText("Username");
+    ciscoControllerUserField->setMaximumWidth(120);
+    QLabel* ciscoPassLabel = new QLabel("PASS:", ciscoFrame);
+    ciscoControllerPassField = new QLineEdit(ciscoFrame);
+    ciscoControllerPassField->setPlaceholderText("Controller password");
+    ciscoControllerPassField->setEchoMode(QLineEdit::Password);
+    ciscoControllerPassField->setInputMethodHints(Qt::ImhSensitiveData | Qt::ImhNoPredictiveText | Qt::ImhNoAutoUppercase);
+    ciscoConnectionLayout->addWidget(ciscoIpLabel, 0, 0);
+    ciscoConnectionLayout->addWidget(ciscoControllerIpField, 0, 1);
+    ciscoConnectionLayout->addWidget(ciscoUserLabel, 0, 2);
+    ciscoConnectionLayout->addWidget(ciscoControllerUserField, 0, 3);
+    ciscoConnectionLayout->addWidget(ciscoPassLabel, 0, 4);
+    ciscoConnectionLayout->addWidget(ciscoControllerPassField, 0, 5);
+    ciscoConnectionLayout->addWidget(ui->btn_test_ssh, 0, 6);
+    ciscoConnectionLayout->setColumnStretch(7, 1);
+    ciscoLayout->addLayout(ciscoConnectionLayout, 2, 0, 1, 4);
+
+    QLabel* ciscoDetailsHeader = new QLabel("WLAN Configuration", ciscoFrame);
+    ciscoDetailsHeader->setObjectName("ciscoSectionHeader");
+    ciscoLayout->addWidget(ciscoDetailsHeader, 3, 0, 1, 4);
+
+    ciscoDetailsFrame = new QFrame(ciscoFrame);
+    QGridLayout* ciscoDetailsLayout = new QGridLayout(ciscoDetailsFrame);
+    ciscoDetailsLayout->setContentsMargins(0, 0, 0, 0);
+    ciscoDetailsLayout->setHorizontalSpacing(8);
+    ciscoDetailsLayout->setVerticalSpacing(6);
+
     auto addCiscoField = [&](int row, int column, const QString& labelText, QLineEdit*& field, const QString& placeholder) {
-        QLabel* label = new QLabel(labelText, ciscoFrame);
-        field = new QLineEdit(ciscoFrame);
+        QLabel* label = new QLabel(labelText, ciscoDetailsFrame);
+        field = new QLineEdit(ciscoDetailsFrame);
         field->setPlaceholderText(placeholder);
-        ciscoLayout->addWidget(label, row, column);
-        ciscoLayout->addWidget(field, row, column + 1);
+        ciscoDetailsLayout->addWidget(label, row, column);
+        ciscoDetailsLayout->addWidget(field, row, column + 1);
     };
 
-    addCiscoField(2, 0, "Company Name:", ciscoCompanyName, "Example Client");
-    addCiscoField(2, 2, "Removal Date:", ciscoRemovalDate, "MM/DD/YYYY");
-    addCiscoField(3, 0, "SSID:", ciscoSsid, "Broadcast SSID");
-    addCiscoField(3, 2, "Password:", ciscoPassword, "Minimum 8 characters");
-    addCiscoField(4, 0, "WLAN ID:", ciscoWlanId, "62");
-    addCiscoField(4, 2, "Max Clients:", ciscoMaxClients, "10");
+    addCiscoField(0, 0, "Company Name:", ciscoCompanyName, "Example Client");
+    addCiscoField(0, 2, "Removal Date:", ciscoRemovalDate, "MM/DD/YYYY");
+    addCiscoField(1, 0, "SSID:", ciscoSsid, "Broadcast SSID");
+    addCiscoField(1, 2, "Password:", ciscoPassword, "Minimum 8 characters");
+    addCiscoField(2, 0, "WLAN ID:", ciscoWlanId, "62");
+    btnCheckWlanIds = new QPushButton("CHECK WLAN IDS", ciscoDetailsFrame);
+    btnCheckWlanIds->setMinimumWidth(132);
+    btnCheckWlanIds->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Fixed);
+    ciscoDetailsLayout->addWidget(btnCheckWlanIds, 2, 2, 1, 2, Qt::AlignLeft);
+    connect(btnCheckWlanIds, &QPushButton::clicked, this, &ACS_Wynn_Builder::on_btn_check_wlan_ids_clicked);
 
-    QLabel* ciscoVlanLabel = new QLabel("VLAN:", ciscoFrame);
-    ciscoVlan = new QComboBox(ciscoFrame);
+    QLabel* ciscoMaxClientsLabel = new QLabel("Max Clients:", ciscoDetailsFrame);
+    ciscoMaxClients = new QLineEdit(ciscoDetailsFrame);
+    ciscoMaxClients->setPlaceholderText("10");
+    ciscoMaxClients->setMaximumWidth(90);
+    ciscoDetailsLayout->addWidget(ciscoMaxClientsLabel, 3, 2);
+    ciscoDetailsLayout->addWidget(ciscoMaxClients, 3, 3);
+
+    QLabel* ciscoVlanLabel = new QLabel("VLAN:", ciscoDetailsFrame);
+    ciscoVlan = new QComboBox(ciscoDetailsFrame);
     ciscoVlan->setEditable(true);
     ciscoVlan->setInsertPolicy(QComboBox::NoInsert);
     ciscoVlan->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     ciscoVlan->setMinimumContentsLength(10);
     ciscoVlan->setPlaceholderText("Select Interface or VLAN");
-    ciscoLayout->addWidget(ciscoVlanLabel, 5, 0);
-    ciscoLayout->addWidget(ciscoVlan, 5, 1);
+    ciscoDetailsLayout->addWidget(ciscoVlanLabel, 3, 0);
+    ciscoDetailsLayout->addWidget(ciscoVlan, 3, 1);
 
-    QGridLayout* ciscoBuyoutLayout = new QGridLayout();
-    ciscoBuyoutLayout->setHorizontalSpacing(12);
-    ciscoBuyoutLayout->setVerticalSpacing(6);
-    chk_cisco_legacy = new QCheckBox("Legacy Buyout", ciscoFrame);
-    chk_cisco_encore = new QCheckBox("Encore Buyout", ciscoFrame);
-    chk_cisco_expansion = new QCheckBox("Expansion Buyout", ciscoFrame);
-    ciscoBuyoutLayout->addWidget(chk_cisco_legacy, 0, 0);
-    ciscoBuyoutLayout->addWidget(chk_cisco_encore, 0, 1);
-    ciscoBuyoutLayout->addWidget(chk_cisco_expansion, 0, 2);
-    ciscoBuyoutLayout->setColumnStretch(3, 1);
-    ciscoLayout->addLayout(ciscoBuyoutLayout, 6, 0, 1, 4);
+    chk_cisco_legacy = new QCheckBox("Legacy Buyout", ciscoDetailsFrame);
+    chk_cisco_encore = new QCheckBox("Encore Buyout", ciscoDetailsFrame);
+    chk_cisco_expansion = new QCheckBox("Expansion Buyout", ciscoDetailsFrame);
+    if (QHBoxLayout* rowLayout = qobject_cast<QHBoxLayout*>(ciscoBuyoutOptionsRow ? ciscoBuyoutOptionsRow->layout() : nullptr)) {
+        rowLayout->addWidget(chk_cisco_legacy);
+        rowLayout->addWidget(chk_cisco_encore);
+        rowLayout->addWidget(chk_cisco_expansion);
+        rowLayout->addStretch(1);
+    }
 
-    search_cisco_wynn = new QLineEdit(ciscoFrame);
+    search_cisco_wynn = new QLineEdit(ciscoDetailsFrame);
     search_cisco_wynn->setPlaceholderText("Search Cisco AP Groups...");
-    ciscoLayout->addWidget(search_cisco_wynn, 7, 0, 1, 4);
+    ciscoDetailsLayout->addWidget(search_cisco_wynn, 4, 0, 1, 4);
 
-    tree_cisco_wynn = new QTreeWidget(ciscoFrame);
+    tree_cisco_wynn = new QTreeWidget(ciscoDetailsFrame);
     tree_cisco_wynn->setHeaderHidden(true);
     tree_cisco_wynn->setMinimumHeight(150);
-    ciscoLayout->addWidget(tree_cisco_wynn, 8, 0, 1, 4);
-    ciscoLayout->setRowStretch(8, 1);
+    ciscoDetailsLayout->addWidget(tree_cisco_wynn, 5, 0, 1, 4);
+    ciscoDetailsLayout->setRowStretch(5, 1);
+    ciscoDetailsLayout->setColumnStretch(1, 4);
+    ciscoDetailsLayout->setColumnStretch(3, 2);
+    ciscoLayout->addWidget(ciscoDetailsFrame, 4, 0, 1, 4);
+    ciscoLayout->setRowStretch(4, 1);
 
     ciscoPassword->setEchoMode(QLineEdit::Normal);
     ciscoPassword->setInputMethodHints(Qt::ImhSensitiveData | Qt::ImhNoPredictiveText | Qt::ImhNoAutoUppercase);
@@ -2289,6 +2502,25 @@ ACS_Wynn_Builder::ACS_Wynn_Builder(QWidget* parent)
 
     ui->mainLayout->insertWidget(ui->mainLayout->indexOf(ui->siteTabs), ciscoFrame);
     ciscoFrame->hide();
+
+    auto mirrorLineEditText = [](QLineEdit* source, QLineEdit* target) {
+        if (!source || !target)
+            return;
+
+        QObject::connect(source, &QLineEdit::textChanged, target, [source, target](const QString& text) {
+            if (target->text() == text)
+                return;
+            QSignalBlocker blocker(target);
+            target->setText(text);
+            });
+        };
+
+    mirrorLineEditText(ciscoControllerIpField, ui->entry_ip);
+    mirrorLineEditText(ui->entry_ip, ciscoControllerIpField);
+    mirrorLineEditText(ciscoControllerUserField, ui->entry_user);
+    mirrorLineEditText(ui->entry_user, ciscoControllerUserField);
+    mirrorLineEditText(ciscoControllerPassField, ui->entry_ssh_pass);
+    mirrorLineEditText(ui->entry_ssh_pass, ciscoControllerPassField);
 
     // Swap the placeholder QListWidgets from the .ui file for live QTreeWidgets.
     if (ui->list_wynn_aps->parentWidget() &&
@@ -2383,11 +2615,11 @@ ACS_Wynn_Builder::ACS_Wynn_Builder(QWidget* parent)
                     : "No active controller session.");
             }
             updateCiscoConnectionUi();
+            emit ciscoSessionStateChanged();
         });
     connect(persistentSessionManager, &ControllerSessionManager::connectFinished, this,
         [this](bool success, const QString& message) {
             ui->btn_test_ssh->setEnabled(true);
-            ui->btn_deploy->setEnabled(true);
             if (!success) {
                 pendingPersistentDeploy = false;
                 pendingPersistentDeployScript.clear();
@@ -2406,6 +2638,7 @@ ACS_Wynn_Builder::ACS_Wynn_Builder(QWidget* parent)
                 pendingPersistentDeployScript.clear();
                 appendOutputText(">>> ERROR: Session mode changed before deployment could start.", "Deployment Console");
             }
+            updateCiscoConnectionUi();
             this->statusBar()->showMessage(message, 5000);
         });
     connect(persistentSessionManager, &ControllerSessionManager::deployFinished, this,
@@ -2438,12 +2671,15 @@ ACS_Wynn_Builder::ACS_Wynn_Builder(QWidget* parent)
     if (ui->mainLayout) {
         ui->mainLayout->setStretch(ui->mainLayout->indexOf(profilePresetFrame), 0);
         ui->mainLayout->setStretch(ui->mainLayout->indexOf(apGroupSelectorFrame), 0);
-        ui->mainLayout->setStretch(ui->mainLayout->indexOf(ui->siteTabs), 2);
+        ui->mainLayout->setStretch(ui->mainLayout->indexOf(ui->siteTabs), 0);
         ui->mainLayout->setStretch(ui->mainLayout->indexOf(ciscoFrame), 2);
-        ui->mainLayout->setStretch(ui->mainLayout->indexOf(ui->text_output), 1);
+        ui->mainLayout->setStretch(ui->mainLayout->indexOf(ui->text_output), 3);
     }
-    if (ui->siteTabs)
-        ui->siteTabs->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::MinimumExpanding);
+    if (ui->siteTabs) {
+        ui->siteTabs->setMinimumHeight(44);
+        ui->siteTabs->setMaximumHeight(52);
+        ui->siteTabs->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+    }
     if (ciscoFrame)
         ciscoFrame->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::MinimumExpanding);
     updateApGroupSelectionSummary();
@@ -2457,6 +2693,34 @@ ACS_Wynn_Builder::~ACS_Wynn_Builder() {
         persistentSessionThread->wait();
     }
     delete ui;
+}
+
+bool ACS_Wynn_Builder::hasActiveCiscoSession() const {
+    return ciscoSessionConnected && ciscoSessionIsCiscoMode;
+}
+
+QString ACS_Wynn_Builder::activeCiscoSessionIp() const {
+    return ciscoSessionIp;
+}
+
+QString ACS_Wynn_Builder::activeCiscoSessionUser() const {
+    return ciscoSessionUser;
+}
+
+void ACS_Wynn_Builder::setCiscoSessionCredentials(const QString& ip, const QString& user, const QString& pass) {
+    if (ciscoControllerIpField)
+        ciscoControllerIpField->setText(ip);
+    if (ciscoControllerUserField)
+        ciscoControllerUserField->setText(user);
+    if (ciscoControllerPassField)
+        ciscoControllerPassField->setText(pass);
+
+    if (ui->entry_ip)
+        ui->entry_ip->setText(ip);
+    if (ui->entry_user)
+        ui->entry_user->setText(user);
+    if (ui->entry_ssh_pass)
+        ui->entry_ssh_pass->setText(pass);
 }
 
 bool ACS_Wynn_Builder::isPersistentCiscoSessionAlive() const {
@@ -2538,23 +2802,37 @@ void ACS_Wynn_Builder::disconnectPersistentCiscoSession(const QString& logMessag
 
 void ACS_Wynn_Builder::updateCiscoConnectionUi() {
     const bool isCiscoMode = modeTabs && modeTabs->currentIndex() == 1;
+    const bool hasCiscoSession = isCiscoMode && ciscoSessionConnected && ciscoSessionIsCiscoMode;
 
     if (ui->btn_test_ssh) {
         ui->btn_test_ssh->setVisible(isCiscoMode);
-        ui->btn_test_ssh->setText((isCiscoMode && ciscoSessionConnected && ciscoSessionIsCiscoMode) ? "DISCONNECT" : "CONNECT");
+        ui->btn_test_ssh->setText(hasCiscoSession ? "DISCONNECT" : "CONNECT");
     }
     if (btnCheckWlanIds) {
         btnCheckWlanIds->setVisible(isCiscoMode);
-        btnCheckWlanIds->setEnabled(isCiscoMode && ciscoSessionConnected && ciscoSessionIsCiscoMode);
+        btnCheckWlanIds->setEnabled(hasCiscoSession);
+    }
+    if (btnSelectApGroups) {
+        btnSelectApGroups->setVisible(true);
+        btnSelectApGroups->setEnabled(!isCiscoMode || hasCiscoSession);
+    }
+    if (ui->btn_generate_cisco) {
+        ui->btn_generate_cisco->setEnabled(!isCiscoMode || hasCiscoSession);
+    }
+    if (ui->btn_deploy && isCiscoMode) {
+        ui->btn_deploy->setEnabled(hasCiscoSession);
+    }
+    if (ciscoDetailsFrame) {
+        ciscoDetailsFrame->setEnabled(hasCiscoSession);
     }
     if (ciscoConnectionStatusLabel) {
         ciscoConnectionStatusLabel->setVisible(isCiscoMode);
-        if (ciscoSessionConnected && ciscoSessionIsCiscoMode) {
+        if (hasCiscoSession) {
             ciscoConnectionStatusLabel->setText(
                 "Cisco Session Status: Connected to " + ciscoSessionIp +
                 " as " + (ciscoSessionUser.isEmpty() ? QString("<unknown user>") : ciscoSessionUser));
         } else if (isCiscoMode) {
-            ciscoConnectionStatusLabel->setText("Cisco Session Status: Disconnected. Click CONNECT before checking WLAN IDs or deploying.");
+            ciscoConnectionStatusLabel->setText("Cisco Session Status: Disconnected. Connect to unlock the WLAN form.");
         }
     }
 }
@@ -3022,6 +3300,10 @@ void ACS_Wynn_Builder::on_btn_generate_clicked() {
 }
 
 void ACS_Wynn_Builder::on_btn_generate_cisco_clicked() {
+    if (modeTabs && modeTabs->currentIndex() == 1 && (!ciscoSessionConnected || !ciscoSessionIsCiscoMode)) {
+        QMessageBox::warning(this, "Cisco Session", "Connect to the Cisco controller first.");
+        return;
+    }
     setOutputText(buildCiscoConfigScript(), "Output");
     this->statusBar()->showMessage("Cisco WLAN script generated.", 3000);
 }
@@ -3041,6 +3323,10 @@ void ACS_Wynn_Builder::on_profilePreset_currentIndexChanged(int) {
 void ACS_Wynn_Builder::on_btn_select_ap_groups_clicked() {
     const bool isCiscoMode = modeTabs && modeTabs->currentIndex() == 1;
     if (isCiscoMode) {
+        if (!ciscoSessionConnected || !ciscoSessionIsCiscoMode) {
+            QMessageBox::warning(this, "Cisco Session", "Connect to the Cisco controller first.");
+            return;
+        }
         showApGroupSelectorDialog("Select Cisco AP Groups", tree_cisco_wynn);
         return;
     }
@@ -3139,6 +3425,7 @@ void ACS_Wynn_Builder::on_btn_deploy_clicked() {
         appendOutputText(">>> ERROR: " + trustError, "Deployment Console");
         ui->btn_deploy->setEnabled(true);
         ui->btn_deploy->setText("DEPLOY");
+        updateCiscoConnectionUi();
         this->statusBar()->showMessage("Deployment cancelled.", 5000);
         return;
     }
@@ -3168,7 +3455,7 @@ void ACS_Wynn_Builder::on_btn_test_ssh_clicked() {
 
     if (ciscoSessionConnected && ciscoSessionIsCiscoMode == isCiscoMode) {
         QMetaObject::invokeMethod(persistentSessionManager, "disconnectPersistent", Qt::QueuedConnection);
-        ui->btn_deploy->setEnabled(true);
+        updateCiscoConnectionUi();
         this->statusBar()->showMessage(isCiscoMode ? "Cisco controller disconnected." : "Aruba controller disconnected.", 5000);
         return;
     }
@@ -3215,7 +3502,6 @@ void ACS_Wynn_Builder::on_btn_test_ssh_clicked() {
         appendOutputText(">>> ERROR: " + trustError, "Deployment Console");
         ui->btn_test_ssh->setEnabled(true);
         updateCiscoConnectionUi();
-        ui->btn_deploy->setEnabled(true);
         this->statusBar()->showMessage(isCiscoMode ? "Cisco connection cancelled." : "SSH test cancelled.", 5000);
         return;
     }
@@ -3272,11 +3558,15 @@ void ACS_Wynn_Builder::on_btn_open_mremote_clicked() {
 }
 
 void ACS_Wynn_Builder::on_btn_reset_clicked() {
+    const bool preserveCiscoConnection = ciscoSessionConnected && ciscoSessionIsCiscoMode;
+
     ui->entry_essid->clear();
     ui->entry_vlan->clear();
     ui->entry_psk->clear();
-    ui->entry_user->clear();
-    ui->entry_ssh_pass->clear();
+    if (!preserveCiscoConnection) {
+        ui->entry_user->clear();
+        ui->entry_ssh_pass->clear();
+    }
     ui->entry_role->setText("50Mbps-Per-User");
 
     ui->combo_auth->clear();
@@ -3369,6 +3659,7 @@ void ACS_Wynn_Builder::on_btn_wizard_clicked() {
     )");
 
     if (modeTabs && modeTabs->currentIndex() == 1) {
+        const bool hasActiveCiscoConnection = hasActiveCiscoSession();
         QStringList interfaceOptions = apData.ciscoInterfaces;
         for (const QString& fallbackInterface : defaultCiscoInterfaceList()) {
             if (!interfaceOptions.contains(fallbackInterface))
@@ -3376,29 +3667,40 @@ void ACS_Wynn_Builder::on_btn_wizard_clicked() {
         }
         interfaceOptions.sort();
 
-        CiscoWizardPage1* p1 = new CiscoWizardPage1(interfaceOptions);
-        CiscoWizardPage2* p2 = new CiscoWizardPage2(apData);
-        CiscoWizardPage3* p3 = new CiscoWizardPage3(p2);
+        CiscoConnectWizardPage* connectPage = nullptr;
+        const QString detailsTitle = hasActiveCiscoConnection
+            ? "Step 1: Cisco WLAN Details"
+            : "Step 2: Cisco WLAN Details";
+        const QString groupsTitle = hasActiveCiscoConnection
+            ? "Step 2: Cisco AP Group Selection"
+            : "Step 3: Cisco AP Group Selection";
+        const QString previewTitle = hasActiveCiscoConnection
+            ? "Step 3: Cisco Configuration Preview"
+            : "Step 4: Cisco Configuration Preview";
+        const QString deployTitle = hasActiveCiscoConnection
+            ? "Step 4: Cisco Deployment"
+            : "Step 5: Cisco Deployment";
+
+        if (!hasActiveCiscoConnection)
+            connectPage = new CiscoConnectWizardPage(this, "Step 1: Cisco Controller Connection");
+
+        CiscoWizardPage1* p1 = new CiscoWizardPage1(interfaceOptions, detailsTitle);
+        CiscoWizardPage2* p2 = new CiscoWizardPage2(apData, groupsTitle);
+        CiscoWizardPage3* p3 = new CiscoWizardPage3(p2, previewTitle);
 
         DeploymentOptions deployOptions;
         deployOptions.sendInitialEnter = true;
         deployOptions.useCiscoShellLogin = true;
-
-        WizardPageTarget* targetPage = new WizardPageTarget(
-            apData,
-            "98.173.86.102",
-            ui->entry_user->text().trimmed(),
-            "Step 4: Cisco Controller Target"
-        );
         WizardPage6* deployPage = new WizardPage6(
             p3->configPreview,
             deployOptions,
-            "Step 5: Cisco Deployment"
+            deployTitle
         );
 
+        if (connectPage)
+            wizard.addPage(connectPage);
         wizard.addPage(p1);
         wizard.addPage(p2);
-        wizard.addPage(targetPage);
         wizard.addPage(p3);
         wizard.addPage(deployPage);
 
@@ -3497,12 +3799,14 @@ void ACS_Wynn_Builder::on_siteTabs_currentChanged(int index) {
     }
 
     ui->siteTabs->setStyleSheet(siteTheme);
+    updateBuyoutOptionsUi();
     if (!modeTabs || modeTabs->currentIndex() == 0)
         updateLivePreview();
 }
 
 void ACS_Wynn_Builder::syncModeUi() {
     const bool isCiscoMode = modeTabs && modeTabs->currentIndex() == 1;
+    const int minimumWindowHeight = isCiscoMode ? 760 : 640;
 
     ui->card1->setVisible(!isCiscoMode);
     ui->siteTabs->setVisible(!isCiscoMode);
@@ -3518,6 +3822,12 @@ void ACS_Wynn_Builder::syncModeUi() {
     ui->btn_deploy->setText("DEPLOY");
     if (ui->btn_open_mremote)
         ui->btn_open_mremote->hide();
+    if (ui->label_ip) ui->label_ip->setVisible(!isCiscoMode);
+    if (ui->entry_ip) ui->entry_ip->setVisible(!isCiscoMode);
+    if (ui->label_user) ui->label_user->setVisible(!isCiscoMode);
+    if (ui->entry_user) ui->entry_user->setVisible(!isCiscoMode);
+    if (ui->label_pass) ui->label_pass->setVisible(!isCiscoMode);
+    if (ui->entry_ssh_pass) ui->entry_ssh_pass->setVisible(!isCiscoMode);
     updateCiscoConnectionUi();
 
     if (ciscoFrame)
@@ -3531,6 +3841,10 @@ void ACS_Wynn_Builder::syncModeUi() {
         ui->entry_ip->setReadOnly(false);
         on_siteTabs_currentChanged(ui->siteTabs->currentIndex());
     }
+    setMinimumHeight(minimumWindowHeight);
+    if (height() < minimumWindowHeight)
+        resize(width(), minimumWindowHeight);
+    updateBuyoutOptionsUi();
     updateApGroupSelectionSummary();
 }
 
@@ -3549,6 +3863,20 @@ void ACS_Wynn_Builder::updateApGroupSelectionSummary() {
         const QString siteLabel = ui->siteTabs->currentIndex() == 0 ? "Wynn" : "Stations";
         apGroupSummaryLabel->setText(siteLabel + " AP groups selected: " + QString::number(groups.size()));
     }
+}
+
+void ACS_Wynn_Builder::updateBuyoutOptionsUi() {
+    const bool isCiscoMode = modeTabs && modeTabs->currentIndex() == 1;
+    const bool isWynnSite = ui->siteTabs && ui->siteTabs->currentIndex() == 0;
+
+    if (buyoutOptionsFrame)
+        buyoutOptionsFrame->setVisible(true);
+    if (wynnBuyoutOptionsRow)
+        wynnBuyoutOptionsRow->setVisible(!isCiscoMode && isWynnSite);
+    if (stationsBuyoutOptionsRow)
+        stationsBuyoutOptionsRow->setVisible(!isCiscoMode && !isWynnSite);
+    if (ciscoBuyoutOptionsRow)
+        ciscoBuyoutOptionsRow->setVisible(isCiscoMode);
 }
 
 void ACS_Wynn_Builder::showApGroupSelectorDialog(const QString& title, QTreeWidget* sourceTree) {
@@ -3725,7 +4053,7 @@ void ACS_Wynn_Builder::loadApGroupsFromJson() {
         apData.stationsMisc = { ".Boulder-Convention", ".FiestaHenderson-Convention", ".Palace-Convention", ".SantaFe-Convention", ".Sunset-Convention", ".Texas-Convention", "Boulder-Convention", "Palace-Convention", "SantaFe-Convention", "Sunset-Convention", "default" };
         apData.ciscoInterfaces = defaultCiscoInterfaceList();
         updateConfig.enabled = true;
-        updateConfig.metadataUrl = QUrl("https://gist.githubusercontent.com/congiirepair/608d6a71617c2c8fba6dd2f7ee134dcc/raw/2af487571cc744ed62c5c4c20eeb27e3a0e1e2c7/version.txt");
+        updateConfig.metadataUrl = QUrl("https://gist.githubusercontent.com/congiirepair/608d6a71617c2c8fba6dd2f7ee134dcc/raw/version.txt");
         updateConfig.packageUrl = QUrl("https://github.com/congiirepair/ACS_Wynn_Builder/releases/download/1.0.4/ACS_Wynn_Builder_Update.zip");
         updateConfig.expectedSha256 = "711b1f0eb54026f2cff413e14af2aab5d0b725aa64396e281cf6bdf9958d932b";
         updateConfig.allowedHosts = {
@@ -3958,66 +4286,79 @@ bool ACS_Wynn_Builder::fetchGithubReleaseMetadataForVersion(const QString& versi
     if (owner.isEmpty() || repo.isEmpty() || assetName.isEmpty())
         return false;
 
-    const QUrl apiUrl(QString("https://api.github.com/repos/%1/%2/releases/tags/%3")
-        .arg(owner, repo, version));
+    auto fetchReleaseByTag = [&](const QString& tag) -> bool {
+        const QUrl apiUrl(QString("https://api.github.com/repos/%1/%2/releases/tags/%3")
+            .arg(owner, repo, tag));
 
-    QNetworkAccessManager manager;
-    QNetworkRequest request(apiUrl);
-    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
-    request.setHeader(QNetworkRequest::UserAgentHeader, "ACS Tool Updater");
+        QNetworkAccessManager manager;
+        QNetworkRequest request(apiUrl);
+        request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
+        request.setHeader(QNetworkRequest::UserAgentHeader, "ACS Tool Updater");
 
-    QEventLoop loop;
-    QTimer timeoutTimer;
-    timeoutTimer.setSingleShot(true);
+        QEventLoop loop;
+        QTimer timeoutTimer;
+        timeoutTimer.setSingleShot(true);
 
-    QNetworkReply* reply = manager.get(request);
-    QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
-    QObject::connect(&timeoutTimer, &QTimer::timeout, &loop, &QEventLoop::quit);
-    timeoutTimer.start(10000);
-    loop.exec();
+        QNetworkReply* reply = manager.get(request);
+        QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+        QObject::connect(&timeoutTimer, &QTimer::timeout, &loop, &QEventLoop::quit);
+        timeoutTimer.start(10000);
+        loop.exec();
 
-    if (timeoutTimer.isActive())
-        timeoutTimer.stop();
-    else
-        reply->abort();
+        if (timeoutTimer.isActive())
+            timeoutTimer.stop();
+        else
+            reply->abort();
 
-    if (reply->error() != QNetworkReply::NoError) {
+        if (reply->error() != QNetworkReply::NoError) {
+            reply->deleteLater();
+            return false;
+        }
+
+        QJsonParseError parseError;
+        const QJsonDocument document = QJsonDocument::fromJson(reply->readAll(), &parseError);
         reply->deleteLater();
+        if (parseError.error != QJsonParseError::NoError || !document.isObject())
+            return false;
+
+        const QJsonObject obj = document.object();
+        const QJsonArray assets = obj.value("assets").toArray();
+        for (const QJsonValue& assetValue : assets) {
+            const QJsonObject asset = assetValue.toObject();
+            const QString candidateName = asset.value("name").toString().trimmed();
+            const QString downloadUrl = asset.value("browser_download_url").toString().trimmed();
+            QString digest = asset.value("digest").toString().trimmed();
+            if (candidateName != assetName || downloadUrl.isEmpty())
+                continue;
+
+            if (digest.startsWith("sha256:", Qt::CaseInsensitive))
+                digest = digest.mid(QString("sha256:").size());
+            digest.remove(QRegularExpression("\\s+"));
+
+            *packageUrl = QUrl(downloadUrl);
+            // Never carry forward an older release checksum onto a newer asset.
+            if (digest.size() == 64)
+                *expectedSha256 = digest.toLower();
+            else
+                expectedSha256->clear();
+
+            allowedHosts->append("api.github.com");
+            allowedHosts->append("github.com");
+            allowedHosts->append("githubusercontent.com");
+            allowedHosts->append("objects.githubusercontent.com");
+            allowedHosts->append("release-assets.githubusercontent.com");
+            allowedHosts->removeDuplicates();
+            return true;
+        }
+
         return false;
-    }
+        };
 
-    QJsonParseError parseError;
-    const QJsonDocument document = QJsonDocument::fromJson(reply->readAll(), &parseError);
-    reply->deleteLater();
-    if (parseError.error != QJsonParseError::NoError || !document.isObject())
-        return false;
-
-    const QJsonObject obj = document.object();
-    const QJsonArray assets = obj.value("assets").toArray();
-    for (const QJsonValue& assetValue : assets) {
-        const QJsonObject asset = assetValue.toObject();
-        const QString candidateName = asset.value("name").toString().trimmed();
-        const QString downloadUrl = asset.value("browser_download_url").toString().trimmed();
-        QString digest = asset.value("digest").toString().trimmed();
-        if (candidateName != assetName || downloadUrl.isEmpty())
-            continue;
-
-        if (digest.startsWith("sha256:", Qt::CaseInsensitive))
-            digest = digest.mid(QString("sha256:").size());
-        digest.remove(QRegularExpression("\\s+"));
-
-        *packageUrl = QUrl(downloadUrl);
-        if (!digest.isEmpty())
-            *expectedSha256 = digest.toLower();
-
-        allowedHosts->append("api.github.com");
-        allowedHosts->append("github.com");
-        allowedHosts->append("githubusercontent.com");
-        allowedHosts->append("objects.githubusercontent.com");
-        allowedHosts->append("release-assets.githubusercontent.com");
-        allowedHosts->removeDuplicates();
+    if (fetchReleaseByTag(version))
         return true;
-    }
+
+    if (!version.startsWith('v', Qt::CaseInsensitive) && fetchReleaseByTag("v" + version))
+        return true;
 
     return false;
 }
