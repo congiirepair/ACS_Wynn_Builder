@@ -2749,10 +2749,10 @@ ACS_Wynn_Builder::ACS_Wynn_Builder(QWidget* parent)
     }
 
     const QRect available = screen() ? screen()->availableGeometry() : QRect(0, 0, 1280, 720);
-    const int targetWidth = qBound(980, available.width() - 60, 1140);
-    const int targetHeight = qBound(680, available.height() - 60, 760);
+    const int targetWidth = qBound(860, available.width() - 28, 980);
+    const int targetHeight = qBound(560, available.height() - 16, 660);
     resize(targetWidth, targetHeight);
-    setMinimumSize(980, 680);
+    setMinimumSize(860, 560);
     setMaximumSize(QWIDGETSIZE_MAX, QWIDGETSIZE_MAX);
     applyAdaptiveTheme();
 
@@ -2770,8 +2770,8 @@ ACS_Wynn_Builder::ACS_Wynn_Builder(QWidget* parent)
         connect(ui->btn_minimize, &QPushButton::clicked, this, &QWidget::showMinimized);
 
     if (ui->mainLayout) {
-        ui->mainLayout->setContentsMargins(18, 18, 18, 18);
-        ui->mainLayout->setSpacing(16);
+        ui->mainLayout->setContentsMargins(10, 10, 10, 10);
+        ui->mainLayout->setSpacing(8);
     }
 
     auto detachWidgetFromLayout = [&](QLayout* layout, QWidget* widget, const auto& self) -> bool {
@@ -2800,7 +2800,8 @@ ACS_Wynn_Builder::ACS_Wynn_Builder(QWidget* parent)
     if (ui->text_output)
         ui->text_output->setVisible(true);
     if (ui->text_output) {
-        ui->text_output->setMinimumHeight(180);
+        ui->text_output->setMinimumHeight(96);
+        ui->text_output->setMaximumHeight(190);
         ui->text_output->setLineWrapMode(QPlainTextEdit::NoWrap);
         ui->text_output->setTabStopDistance(28);
         ui->text_output->setPlaceholderText("Your live preview, generated script, and deployment transcript will appear here.");
@@ -2810,8 +2811,8 @@ ACS_Wynn_Builder::ACS_Wynn_Builder(QWidget* parent)
     for (QPushButton* button : primaryButtons) {
         if (!button)
             continue;
-        button->setMinimumHeight(42);
-        button->setMinimumWidth(132);
+        button->setMinimumHeight(34);
+        button->setMinimumWidth(112);
     }
     if (ui->btn_open_mremote)
         ui->btn_open_mremote->hide();
@@ -2819,31 +2820,27 @@ ACS_Wynn_Builder::ACS_Wynn_Builder(QWidget* parent)
     for (QPushButton* button : secondaryButtons) {
         if (!button)
             continue;
-        button->setMinimumHeight(38);
-        button->setMinimumWidth(122);
+        button->setMinimumHeight(32);
+        button->setMinimumWidth(104);
     }
 
     QFrame* outputPanel = new QFrame(this);
     outputPanel->setObjectName("outputPanel");
     QVBoxLayout* outputPanelLayout = new QVBoxLayout(outputPanel);
-    outputPanelLayout->setContentsMargins(22, 20, 22, 22);
-    outputPanelLayout->setSpacing(14);
+    outputPanelLayout->setContentsMargins(14, 12, 14, 14);
+    outputPanelLayout->setSpacing(8);
 
     outputTitleLabel = new QLabel("Command Preview", outputPanel);
     outputTitleLabel->setObjectName("panelTitle");
     outputSubtitleLabel = new QLabel("Selections update instantly here before you generate or deploy anything.", outputPanel);
     outputSubtitleLabel->setObjectName("panelSubtitle");
     outputSubtitleLabel->setWordWrap(true);
+    outputSubtitleLabel->hide();
 
-    QWidget* primaryActionsRow = new QWidget(outputPanel);
-    QHBoxLayout* primaryActionsLayout = new QHBoxLayout(primaryActionsRow);
-    primaryActionsLayout->setContentsMargins(0, 0, 0, 0);
-    primaryActionsLayout->setSpacing(10);
-
-    QWidget* secondaryActionsRow = new QWidget(outputPanel);
-    QHBoxLayout* secondaryActionsLayout = new QHBoxLayout(secondaryActionsRow);
-    secondaryActionsLayout->setContentsMargins(0, 0, 0, 0);
-    secondaryActionsLayout->setSpacing(10);
+    QWidget* actionsRow = new QWidget(outputPanel);
+    QHBoxLayout* actionsLayout = new QHBoxLayout(actionsRow);
+    actionsLayout->setContentsMargins(0, 0, 0, 0);
+    actionsLayout->setSpacing(8);
 
     if (ui->buttonLayout)
         ui->mainLayout->removeItem(ui->buttonLayout);
@@ -2851,21 +2848,18 @@ ACS_Wynn_Builder::ACS_Wynn_Builder(QWidget* parent)
     for (QPushButton* button : { ui->btn_wizard, ui->btn_generate, ui->btn_generate_cisco, ui->btn_test_ssh, ui->btn_deploy }) {
         if (ui->buttonLayout)
             ui->buttonLayout->removeWidget(button);
-        primaryActionsLayout->addWidget(button);
+        actionsLayout->addWidget(button);
     }
-    primaryActionsLayout->addStretch(1);
 
     for (QPushButton* button : { ui->btn_remove, ui->btn_copy, ui->btn_reset, ui->btn_open_mremote }) {
         if (ui->buttonLayout)
             ui->buttonLayout->removeWidget(button);
-        secondaryActionsLayout->addWidget(button);
+        actionsLayout->addWidget(button);
     }
-    secondaryActionsLayout->addStretch(1);
+    actionsLayout->addStretch(1);
 
     outputPanelLayout->addWidget(outputTitleLabel);
-    outputPanelLayout->addWidget(outputSubtitleLabel);
-    outputPanelLayout->addWidget(primaryActionsRow);
-    outputPanelLayout->addWidget(secondaryActionsRow);
+    outputPanelLayout->addWidget(actionsRow);
     if (ui->text_output)
         ui->mainLayout->removeWidget(ui->text_output);
     outputPanelLayout->addWidget(ui->text_output, 1);
@@ -2918,7 +2912,7 @@ ACS_Wynn_Builder::ACS_Wynn_Builder(QWidget* parent)
     profilePresetFrame->setObjectName("toolbarCard");
     QHBoxLayout* profilePresetLayout = new QHBoxLayout(profilePresetFrame);
     profilePresetLayout->setContentsMargins(0, 0, 0, 0);
-    profilePresetLayout->setSpacing(8);
+    profilePresetLayout->setSpacing(6);
     QLabel* profilePresetLabel = new QLabel("Profile:", profilePresetFrame);
     profilePresetCombo = new QComboBox(profilePresetFrame);
     profilePresetCombo->addItem("Custom");
@@ -2926,7 +2920,7 @@ ACS_Wynn_Builder::ACS_Wynn_Builder(QWidget* parent)
     profilePresetCombo->addItem("Aruba - Stations");
     profilePresetCombo->addItem("Cisco - Wynn");
     profilePresetCombo->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Fixed);
-    profilePresetCombo->setMinimumContentsLength(18);
+    profilePresetCombo->setMinimumContentsLength(14);
     profilePresetLayout->addWidget(profilePresetLabel);
     profilePresetLayout->addWidget(profilePresetCombo, 0);
     profilePresetLayout->addStretch(1);
@@ -2936,28 +2930,20 @@ ACS_Wynn_Builder::ACS_Wynn_Builder(QWidget* parent)
     QFrame* toolbarCard = new QFrame(this);
     toolbarCard->setObjectName("toolbarCard");
     QVBoxLayout* toolbarCardLayout = new QVBoxLayout(toolbarCard);
-    toolbarCardLayout->setContentsMargins(20, 18, 20, 18);
-    toolbarCardLayout->setSpacing(10);
-    QLabel* workflowTitle = new QLabel("Workflow", toolbarCard);
-    workflowTitle->setObjectName("panelTitle");
-    QLabel* workflowSubtitle = new QLabel("Choose the controller family, load a preset, and move through one consistent build flow.", toolbarCard);
-    workflowSubtitle->setObjectName("panelSubtitle");
-    workflowSubtitle->setWordWrap(true);
-
+    toolbarCardLayout->setContentsMargins(14, 12, 14, 12);
+    toolbarCardLayout->setSpacing(8);
     QWidget* toolbarControlsRow = new QWidget(toolbarCard);
     QHBoxLayout* toolbarControlsLayout = new QHBoxLayout(toolbarControlsRow);
     toolbarControlsLayout->setContentsMargins(0, 0, 0, 0);
-    toolbarControlsLayout->setSpacing(14);
+    toolbarControlsLayout->setSpacing(8);
     toolbarControlsLayout->addWidget(modeTabs, 0, Qt::AlignLeft);
     toolbarControlsLayout->addWidget(profilePresetFrame, 1);
-    btnUpdateApp = new QPushButton("CHECK UPDATES", toolbarCard);
+    btnUpdateApp = new QPushButton("UPDATE APP", toolbarCard);
     btnUpdateApp->setObjectName("btn_update_app");
     btnUpdateApp->setToolTip("Check GitHub for the latest published release and install it into this folder.");
     toolbarControlsLayout->addWidget(btnUpdateApp, 0, Qt::AlignRight);
     toolbarControlsLayout->addStretch(1);
 
-    toolbarCardLayout->addWidget(workflowTitle);
-    toolbarCardLayout->addWidget(workflowSubtitle);
     toolbarCardLayout->addWidget(toolbarControlsRow);
     ui->mainLayout->insertWidget(ui->mainLayout->indexOf(ui->card1), toolbarCard);
     connect(btnUpdateApp, &QPushButton::clicked, this, &ACS_Wynn_Builder::on_btn_update_app_clicked);
@@ -2965,8 +2951,8 @@ ACS_Wynn_Builder::ACS_Wynn_Builder(QWidget* parent)
     apGroupSelectorFrame = new QFrame(this);
     apGroupSelectorFrame->setObjectName("apGroupSelectorFrame");
     QHBoxLayout* apGroupSelectorLayout = new QHBoxLayout(apGroupSelectorFrame);
-    apGroupSelectorLayout->setContentsMargins(18, 14, 18, 14);
-    apGroupSelectorLayout->setSpacing(12);
+    apGroupSelectorLayout->setContentsMargins(12, 10, 12, 10);
+    apGroupSelectorLayout->setSpacing(8);
     btnSelectApGroups = new QPushButton("SELECT AP GROUPS", apGroupSelectorFrame);
     apGroupSummaryLabel = new QLabel("Selected AP groups: 0", apGroupSelectorFrame);
     apGroupSummaryLabel->setWordWrap(true);
@@ -2978,14 +2964,14 @@ ACS_Wynn_Builder::ACS_Wynn_Builder(QWidget* parent)
     buyoutOptionsFrame = new QFrame(this);
     buyoutOptionsFrame->setObjectName("buyoutOptionsFrame");
     QVBoxLayout* buyoutOptionsFrameLayout = new QVBoxLayout(buyoutOptionsFrame);
-    buyoutOptionsFrameLayout->setContentsMargins(18, 8, 18, 8);
+    buyoutOptionsFrameLayout->setContentsMargins(12, 6, 12, 6);
     buyoutOptionsFrameLayout->setSpacing(0);
 
     auto createCenteredBuyoutRow = [&](QWidget*& rowWidget) {
         rowWidget = new QWidget(buyoutOptionsFrame);
         QHBoxLayout* rowLayout = new QHBoxLayout(rowWidget);
         rowLayout->setContentsMargins(0, 0, 0, 0);
-        rowLayout->setSpacing(28);
+        rowLayout->setSpacing(14);
         rowLayout->addStretch(1);
         buyoutOptionsFrameLayout->addWidget(rowWidget);
         return rowLayout;
@@ -3016,9 +3002,9 @@ ACS_Wynn_Builder::ACS_Wynn_Builder(QWidget* parent)
     ciscoFrame = new QFrame(this);
     ciscoFrame->setObjectName("ciscoFrame");
     QGridLayout* ciscoLayout = new QGridLayout(ciscoFrame);
-    ciscoLayout->setContentsMargins(20, 18, 20, 18);
-    ciscoLayout->setHorizontalSpacing(10);
-    ciscoLayout->setVerticalSpacing(10);
+    ciscoLayout->setContentsMargins(14, 12, 14, 12);
+    ciscoLayout->setHorizontalSpacing(8);
+    ciscoLayout->setVerticalSpacing(8);
 
     QLabel* ciscoConnectHeader = new QLabel("Cisco Controller Session", ciscoFrame);
     ciscoConnectHeader->setObjectName("panelTitle");
@@ -3035,11 +3021,11 @@ ACS_Wynn_Builder::ACS_Wynn_Builder(QWidget* parent)
     QLabel* ciscoIpLabel = new QLabel("IP:", ciscoFrame);
     ciscoControllerIpField = new QLineEdit(ciscoFrame);
     ciscoControllerIpField->setPlaceholderText("Cisco controller IP");
-    ciscoControllerIpField->setMaximumWidth(160);
+    ciscoControllerIpField->setMaximumWidth(140);
     QLabel* ciscoUserLabel = new QLabel("USER:", ciscoFrame);
     ciscoControllerUserField = new QLineEdit(ciscoFrame);
     ciscoControllerUserField->setPlaceholderText("Username");
-    ciscoControllerUserField->setMaximumWidth(120);
+    ciscoControllerUserField->setMaximumWidth(110);
     QLabel* ciscoPassLabel = new QLabel("PASS:", ciscoFrame);
     ciscoControllerPassField = new QLineEdit(ciscoFrame);
     ciscoControllerPassField->setPlaceholderText("Controller password");
@@ -3081,7 +3067,7 @@ ACS_Wynn_Builder::ACS_Wynn_Builder(QWidget* parent)
     chkCiscoSplashPage = new QCheckBox("Splash page (open WLAN)", ciscoDetailsFrame);
     ciscoDetailsLayout->addWidget(chkCiscoSplashPage, 2, 2, 1, 2);
     btnCheckWlanIds = new QPushButton("CHECK WLAN IDS", ciscoDetailsFrame);
-    btnCheckWlanIds->setMinimumWidth(132);
+    btnCheckWlanIds->setMinimumWidth(112);
     btnCheckWlanIds->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     ciscoDetailsLayout->addWidget(btnCheckWlanIds, 4, 2, 1, 2);
     connect(btnCheckWlanIds, &QPushButton::clicked, this, &ACS_Wynn_Builder::on_btn_check_wlan_ids_clicked);
@@ -3118,7 +3104,7 @@ ACS_Wynn_Builder::ACS_Wynn_Builder(QWidget* parent)
 
     tree_cisco_wynn = new QTreeWidget(ciscoDetailsFrame);
     tree_cisco_wynn->setHeaderHidden(true);
-    tree_cisco_wynn->setMinimumHeight(150);
+    tree_cisco_wynn->setMinimumHeight(92);
     ciscoDetailsLayout->addWidget(tree_cisco_wynn, 6, 0, 1, 4);
     ciscoDetailsLayout->setRowStretch(6, 1);
     ciscoDetailsLayout->setColumnStretch(0, 0);
@@ -3379,12 +3365,12 @@ ACS_Wynn_Builder::ACS_Wynn_Builder(QWidget* parent)
     if (ui->mainLayout) {
         ui->mainLayout->setStretch(ui->mainLayout->indexOf(apGroupSelectorFrame), 0);
         ui->mainLayout->setStretch(ui->mainLayout->indexOf(ui->siteTabs), 0);
-        ui->mainLayout->setStretch(ui->mainLayout->indexOf(ciscoFrame), 2);
-        ui->mainLayout->setStretch(ui->mainLayout->indexOf(outputPanel), 3);
+        ui->mainLayout->setStretch(ui->mainLayout->indexOf(ciscoFrame), 1);
+        ui->mainLayout->setStretch(ui->mainLayout->indexOf(outputPanel), 0);
     }
     if (ui->siteTabs) {
-        ui->siteTabs->setMinimumHeight(52);
-        ui->siteTabs->setMaximumHeight(60);
+        ui->siteTabs->setMinimumHeight(34);
+        ui->siteTabs->setMaximumHeight(36);
         ui->siteTabs->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
     }
     if (ciscoFrame)
@@ -3476,8 +3462,12 @@ void ACS_Wynn_Builder::ensureOutputDialog(const QString& title, bool clearOutput
 
     // The builder now uses the embedded output panel exclusively.
     // If an older session created the detached dialog, make sure it stays hidden.
-    if (outputDialog && outputDialog->isVisible())
+    if (outputDialog) {
         outputDialog->hide();
+        outputDialog->deleteLater();
+        outputDialog = nullptr;
+        outputDialogText = nullptr;
+    }
 }
 
 void ACS_Wynn_Builder::setOutputText(const QString& text, const QString& title) {
@@ -3497,8 +3487,6 @@ void ACS_Wynn_Builder::setOutputText(const QString& text, const QString& title) 
     }
     if (ui->text_output)
         ui->text_output->setPlainText(text);
-    if (outputDialogText && outputDialog && outputDialog->isVisible())
-        outputDialogText->setPlainText(text);
 }
 
 void ACS_Wynn_Builder::appendOutputText(const QString& text, const QString& title) {
@@ -3508,8 +3496,6 @@ void ACS_Wynn_Builder::appendOutputText(const QString& text, const QString& titl
         outputSubtitleLabel->setText("Live controller transcript. Watch connection, validation, and deployment events as they happen.");
     if (ui->text_output)
         ui->text_output->appendPlainText(text);
-    if (outputDialogText && outputDialog && outputDialog->isVisible())
-        outputDialogText->appendPlainText(text);
 }
 
 void ACS_Wynn_Builder::refreshWorkspaceSummary() {
@@ -4269,7 +4255,7 @@ void ACS_Wynn_Builder::on_siteTabs_currentChanged(int index) {
 
 void ACS_Wynn_Builder::syncModeUi() {
     const bool isCiscoMode = modeTabs && modeTabs->currentIndex() == 1;
-    const int minimumWindowHeight = isCiscoMode ? 680 : 640;
+    const int minimumWindowHeight = isCiscoMode ? 560 : 540;
 
     ui->card1->setVisible(!isCiscoMode);
     ui->siteTabs->setVisible(!isCiscoMode);
@@ -4309,7 +4295,7 @@ void ACS_Wynn_Builder::syncModeUi() {
         if (profilePresetFrame)
             profilePresetFrame->show();
     }
-    setMinimumHeight(qMax(minimumHeight(), minimumWindowHeight));
+    setMinimumHeight(minimumWindowHeight);
     updateBuyoutOptionsUi();
     updateApGroupSelectionSummary();
     refreshWorkspaceSummary();
@@ -4441,7 +4427,7 @@ void ACS_Wynn_Builder::applyAdaptiveTheme() {
     setStyleSheet(buildAppStyleSheet(darkMode));
 
     if (ui && ui->mainLayout) {
-        ui->mainLayout->setSpacing(darkMode ? 12 : 10);
+        ui->mainLayout->setSpacing(darkMode ? 8 : 6);
     }
 }
 
