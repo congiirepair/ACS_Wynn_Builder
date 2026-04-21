@@ -2808,12 +2808,12 @@ ACS_Wynn_Builder::ACS_Wynn_Builder(QWidget* parent)
         ui->text_output->setPlaceholderText("Your live preview, generated script, and deployment transcript will appear here.");
     }
 
-    const QList<QPushButton*> primaryButtons = { ui->btn_wizard, ui->btn_generate, ui->btn_generate_cisco, ui->btn_test_ssh, ui->btn_open_mremote, ui->btn_deploy };
+    const QList<QPushButton*> primaryButtons = { ui->btn_generate, ui->btn_generate_cisco, ui->btn_test_ssh, ui->btn_open_mremote, ui->btn_deploy };
     for (QPushButton* button : primaryButtons) {
         if (!button)
             continue;
-        button->setMinimumHeight(34);
-        button->setMinimumWidth(112);
+        button->setMinimumHeight(30);
+        button->setMinimumWidth(98);
     }
     if (ui->btn_open_mremote)
         ui->btn_open_mremote->hide();
@@ -2821,8 +2821,8 @@ ACS_Wynn_Builder::ACS_Wynn_Builder(QWidget* parent)
     for (QPushButton* button : secondaryButtons) {
         if (!button)
             continue;
-        button->setMinimumHeight(32);
-        button->setMinimumWidth(104);
+        button->setMinimumHeight(30);
+        button->setMinimumWidth(94);
     }
 
     QFrame* actionPanel = new QFrame(this);
@@ -2857,19 +2857,24 @@ ACS_Wynn_Builder::ACS_Wynn_Builder(QWidget* parent)
     if (ui->buttonLayout)
         ui->mainLayout->removeItem(ui->buttonLayout);
 
-    for (QPushButton* button : { ui->btn_wizard, ui->btn_generate, ui->btn_generate_cisco, ui->btn_deploy }) {
+    workflowActionsLayout->addStretch(1);
+    for (QPushButton* button : { ui->btn_generate, ui->btn_generate_cisco, ui->btn_deploy }) {
         if (ui->buttonLayout)
             ui->buttonLayout->removeWidget(button);
         workflowActionsLayout->addWidget(button);
     }
     workflowActionsLayout->addStretch(1);
 
+    utilityActionsLayout->addStretch(1);
     for (QPushButton* button : { ui->btn_test_ssh, ui->btn_remove, ui->btn_copy, ui->btn_reset, ui->btn_open_mremote }) {
         if (ui->buttonLayout)
             ui->buttonLayout->removeWidget(button);
         utilityActionsLayout->addWidget(button);
     }
     utilityActionsLayout->addStretch(1);
+
+    if (ui->btn_wizard)
+        ui->btn_wizard->hide();
 
     actionPanelLayout->addWidget(workflowActionsRow);
     actionPanelLayout->addWidget(utilityActionsRow);
@@ -4309,12 +4314,45 @@ void ACS_Wynn_Builder::syncModeUi() {
     ui->card1->setVisible(!isCiscoMode);
     ui->siteTabs->setVisible(!isCiscoMode);
     ui->card4->setVisible(!isCiscoMode);
-    ui->btn_wizard->setVisible(true);
+
+    if (QWidget* configurationPane = apGroupSelectorFrame ? apGroupSelectorFrame->parentWidget() : nullptr) {
+        if (QVBoxLayout* configurationLayout = qobject_cast<QVBoxLayout*>(configurationPane->layout())) {
+            for (QWidget* widget : { apGroupSelectorFrame, buyoutOptionsFrame, ui->card4, ciscoFrame }) {
+                if (widget)
+                    configurationLayout->removeWidget(widget);
+            }
+
+            int insertIndex = configurationLayout->count();
+            if (insertIndex > 0)
+                --insertIndex; // Keep the trailing stretch at the bottom.
+
+            if (isCiscoMode) {
+                if (ciscoFrame)
+                    configurationLayout->insertWidget(insertIndex++, ciscoFrame);
+                if (apGroupSelectorFrame)
+                    configurationLayout->insertWidget(insertIndex++, apGroupSelectorFrame);
+                if (buyoutOptionsFrame)
+                    configurationLayout->insertWidget(insertIndex++, buyoutOptionsFrame);
+                if (ui->card4)
+                    configurationLayout->insertWidget(insertIndex++, ui->card4);
+            } else {
+                if (apGroupSelectorFrame)
+                    configurationLayout->insertWidget(insertIndex++, apGroupSelectorFrame);
+                if (buyoutOptionsFrame)
+                    configurationLayout->insertWidget(insertIndex++, buyoutOptionsFrame);
+                if (ui->card4)
+                    configurationLayout->insertWidget(insertIndex++, ui->card4);
+                if (ciscoFrame)
+                    configurationLayout->insertWidget(insertIndex++, ciscoFrame);
+            }
+        }
+    }
+
+    ui->btn_wizard->setVisible(false);
     ui->btn_generate->setVisible(!isCiscoMode);
     ui->btn_remove->setVisible(!isCiscoMode);
     ui->btn_generate_cisco->setVisible(isCiscoMode);
 
-    ui->btn_wizard->setText(isCiscoMode ? "CISCO WIZARD" : "WIZARD");
     ui->btn_generate_cisco->setText(isCiscoMode ? "GENERATE" : "GEN CISCO");
     ui->btn_copy->setText("COPY");
     ui->btn_deploy->setText("DEPLOY");
