@@ -2774,43 +2774,6 @@ ACS_Wynn_Builder::ACS_Wynn_Builder(QWidget* parent)
         ui->mainLayout->setSpacing(16);
     }
 
-    heroFrame = new QFrame(this);
-    heroFrame->setObjectName("heroCard");
-    QVBoxLayout* heroLayout = new QVBoxLayout(heroFrame);
-    heroLayout->setContentsMargins(24, 22, 24, 22);
-    heroLayout->setSpacing(10);
-
-    heroTitleLabel = new QLabel("ACS Hotel WiFi Builder", heroFrame);
-    heroTitleLabel->setObjectName("heroTitle");
-    heroTitleLabel->setMinimumHeight(46);
-    heroTitleLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
-    heroTitleLabel->setStyleSheet("color: #F4FAFF; background: transparent;");
-    heroTitleLabel->setFont(QFont("Segoe UI Variable", 20, QFont::Bold));
-    heroSubtitleLabel = new QLabel("Operator-ready builder for Aruba and Cisco guest-network changes.", heroFrame);
-    heroSubtitleLabel->setObjectName("heroSubtitle");
-    heroSubtitleLabel->setStyleSheet("color: #A9BED6; background: transparent;");
-    heroSubtitleLabel->setFont(QFont("Segoe UI Variable", 11, QFont::Medium));
-    heroSubtitleLabel->hide();
-
-    QHBoxLayout* heroBadgeLayout = new QHBoxLayout();
-    heroBadgeLayout->setSpacing(10);
-    modeBadgeLabel = new QLabel(heroFrame);
-    siteBadgeLabel = new QLabel(heroFrame);
-    sessionBadgeLabel = new QLabel(heroFrame);
-    for (QLabel* badge : { modeBadgeLabel, siteBadgeLabel, sessionBadgeLabel }) {
-        badge->setProperty("badgeRole", "chip");
-        badge->setMinimumHeight(34);
-        badge->setAlignment(Qt::AlignCenter);
-        badge->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Fixed);
-        heroBadgeLayout->addWidget(badge);
-    }
-    heroBadgeLayout->addStretch(1);
-
-    heroLayout->addWidget(heroTitleLabel);
-    heroLayout->addWidget(heroSubtitleLabel);
-    heroLayout->addLayout(heroBadgeLayout);
-    ui->mainLayout->insertWidget(0, heroFrame);
-
     auto detachWidgetFromLayout = [&](QLayout* layout, QWidget* widget, const auto& self) -> bool {
         if (!layout || !widget)
             return false;
@@ -3414,7 +3377,6 @@ ACS_Wynn_Builder::ACS_Wynn_Builder(QWidget* parent)
     on_siteTabs_currentChanged(ui->siteTabs->currentIndex());
 
     if (ui->mainLayout) {
-        ui->mainLayout->setStretch(ui->mainLayout->indexOf(heroFrame), 0);
         ui->mainLayout->setStretch(ui->mainLayout->indexOf(apGroupSelectorFrame), 0);
         ui->mainLayout->setStretch(ui->mainLayout->indexOf(ui->siteTabs), 0);
         ui->mainLayout->setStretch(ui->mainLayout->indexOf(ciscoFrame), 2);
@@ -3537,15 +3499,9 @@ void ACS_Wynn_Builder::ensureOutputDialog(const QString& title, bool clearOutput
     outputDialog->setWindowTitle(title.isEmpty() ? "ACS Live Console" : title);
     if (clearOutput && outputDialogText)
         outputDialogText->clear();
-    if (!outputDialog->isVisible()) {
-        outputDialog->show();
-    }
-    outputDialog->raise();
-    outputDialog->activateWindow();
 }
 
 void ACS_Wynn_Builder::setOutputText(const QString& text, const QString& title) {
-    ensureOutputDialog(title, false);
     if (outputTitleLabel)
         outputTitleLabel->setText(title.isEmpty() ? "Command Preview" : title);
     if (outputSubtitleLabel) {
@@ -3562,19 +3518,18 @@ void ACS_Wynn_Builder::setOutputText(const QString& text, const QString& title) 
     }
     if (ui->text_output)
         ui->text_output->setPlainText(text);
-    if (outputDialogText)
+    if (outputDialogText && outputDialog && outputDialog->isVisible())
         outputDialogText->setPlainText(text);
 }
 
 void ACS_Wynn_Builder::appendOutputText(const QString& text, const QString& title) {
-    ensureOutputDialog(title, false);
     if (outputTitleLabel && !title.trimmed().isEmpty())
         outputTitleLabel->setText(title);
     if (outputSubtitleLabel && title.contains("deployment", Qt::CaseInsensitive))
         outputSubtitleLabel->setText("Live controller transcript. Watch connection, validation, and deployment events as they happen.");
     if (ui->text_output)
         ui->text_output->appendPlainText(text);
-    if (outputDialogText)
+    if (outputDialogText && outputDialog && outputDialog->isVisible())
         outputDialogText->appendPlainText(text);
 }
 
