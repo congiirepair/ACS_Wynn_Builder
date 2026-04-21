@@ -14,6 +14,7 @@
 #include <QCryptographicHash>
 #include <QDialogButtonBox>
 #include <QScreen>
+#include <QSplitter>
 #include <algorithm>
 
 QString resolveCiscoInterfaceName(const QString& selection);
@@ -2800,8 +2801,8 @@ ACS_Wynn_Builder::ACS_Wynn_Builder(QWidget* parent)
     if (ui->text_output)
         ui->text_output->setVisible(true);
     if (ui->text_output) {
-        ui->text_output->setMinimumHeight(96);
-        ui->text_output->setMaximumHeight(190);
+        ui->text_output->setMinimumHeight(220);
+        ui->text_output->setMaximumHeight(QWIDGETSIZE_MAX);
         ui->text_output->setLineWrapMode(QPlainTextEdit::NoWrap);
         ui->text_output->setTabStopDistance(28);
         ui->text_output->setPlaceholderText("Your live preview, generated script, and deployment transcript will appear here.");
@@ -2824,42 +2825,55 @@ ACS_Wynn_Builder::ACS_Wynn_Builder(QWidget* parent)
         button->setMinimumWidth(104);
     }
 
+    QFrame* actionPanel = new QFrame(this);
+    actionPanel->setObjectName("toolbarCard");
+    QVBoxLayout* actionPanelLayout = new QVBoxLayout(actionPanel);
+    actionPanelLayout->setContentsMargins(12, 10, 12, 10);
+    actionPanelLayout->setSpacing(6);
+
+    QWidget* workflowActionsRow = new QWidget(actionPanel);
+    QHBoxLayout* workflowActionsLayout = new QHBoxLayout(workflowActionsRow);
+    workflowActionsLayout->setContentsMargins(0, 0, 0, 0);
+    workflowActionsLayout->setSpacing(8);
+
+    QWidget* utilityActionsRow = new QWidget(actionPanel);
+    QHBoxLayout* utilityActionsLayout = new QHBoxLayout(utilityActionsRow);
+    utilityActionsLayout->setContentsMargins(0, 0, 0, 0);
+    utilityActionsLayout->setSpacing(8);
+
     QFrame* outputPanel = new QFrame(this);
     outputPanel->setObjectName("outputPanel");
     QVBoxLayout* outputPanelLayout = new QVBoxLayout(outputPanel);
     outputPanelLayout->setContentsMargins(14, 12, 14, 14);
     outputPanelLayout->setSpacing(8);
 
-    outputTitleLabel = new QLabel("Command Preview", outputPanel);
+    outputTitleLabel = new QLabel("Live Preview", outputPanel);
     outputTitleLabel->setObjectName("panelTitle");
     outputSubtitleLabel = new QLabel("Selections update instantly here before you generate or deploy anything.", outputPanel);
     outputSubtitleLabel->setObjectName("panelSubtitle");
     outputSubtitleLabel->setWordWrap(true);
     outputSubtitleLabel->hide();
 
-    QWidget* actionsRow = new QWidget(outputPanel);
-    QHBoxLayout* actionsLayout = new QHBoxLayout(actionsRow);
-    actionsLayout->setContentsMargins(0, 0, 0, 0);
-    actionsLayout->setSpacing(8);
-
     if (ui->buttonLayout)
         ui->mainLayout->removeItem(ui->buttonLayout);
 
-    for (QPushButton* button : { ui->btn_wizard, ui->btn_generate, ui->btn_generate_cisco, ui->btn_test_ssh, ui->btn_deploy }) {
+    for (QPushButton* button : { ui->btn_wizard, ui->btn_generate, ui->btn_generate_cisco, ui->btn_deploy }) {
         if (ui->buttonLayout)
             ui->buttonLayout->removeWidget(button);
-        actionsLayout->addWidget(button);
+        workflowActionsLayout->addWidget(button);
     }
+    workflowActionsLayout->addStretch(1);
 
-    for (QPushButton* button : { ui->btn_remove, ui->btn_copy, ui->btn_reset, ui->btn_open_mremote }) {
+    for (QPushButton* button : { ui->btn_test_ssh, ui->btn_remove, ui->btn_copy, ui->btn_reset, ui->btn_open_mremote }) {
         if (ui->buttonLayout)
             ui->buttonLayout->removeWidget(button);
-        actionsLayout->addWidget(button);
+        utilityActionsLayout->addWidget(button);
     }
-    actionsLayout->addStretch(1);
+    utilityActionsLayout->addStretch(1);
 
+    actionPanelLayout->addWidget(workflowActionsRow);
+    actionPanelLayout->addWidget(utilityActionsRow);
     outputPanelLayout->addWidget(outputTitleLabel);
-    outputPanelLayout->addWidget(actionsRow);
     if (ui->text_output)
         ui->mainLayout->removeWidget(ui->text_output);
     outputPanelLayout->addWidget(ui->text_output, 1);
@@ -3358,16 +3372,51 @@ ACS_Wynn_Builder::ACS_Wynn_Builder(QWidget* parent)
     connect(ui->siteTabs, SIGNAL(currentChanged(int)),
         this, SLOT(on_siteTabs_currentChanged(int)));
 
+    const int workspaceInsertIndex = ui->mainLayout ? ui->mainLayout->indexOf(ui->card1) : -1;
+    QSplitter* workspaceSplitter = new QSplitter(Qt::Horizontal, this);
+    workspaceSplitter->setObjectName("workspaceSplitter");
+    workspaceSplitter->setChildrenCollapsible(false);
+
+    QWidget* configurationPane = new QWidget(workspaceSplitter);
+    QVBoxLayout* configurationLayout = new QVBoxLayout(configurationPane);
+    configurationLayout->setContentsMargins(0, 0, 0, 0);
+    configurationLayout->setSpacing(8);
+
+    QWidget* previewPane = new QWidget(workspaceSplitter);
+    QVBoxLayout* previewLayout = new QVBoxLayout(previewPane);
+    previewLayout->setContentsMargins(0, 0, 0, 0);
+    previewLayout->setSpacing(0);
+
+    if (ui->mainLayout) {
+        const QList<QWidget*> workspaceWidgets = { ui->card1, ui->siteTabs, apGroupSelectorFrame, buyoutOptionsFrame, ui->card4, ciscoFrame, actionPanel, outputPanel };
+        for (QWidget* widget : workspaceWidgets) {
+            if (!widget)
+                continue;
+            ui->mainLayout->removeWidget(widget);
+        }
+        ui->mainLayout->insertWidget(workspaceInsertIndex < 0 ? 1 : workspaceInsertIndex, workspaceSplitter, 1);
+    }
+
+    const QList<QWidget*> configurationWidgets = { ui->card1, ui->siteTabs, apGroupSelectorFrame, buyoutOptionsFrame, ui->card4, ciscoFrame, actionPanel };
+    for (QWidget* widget : configurationWidgets) {
+        if (widget)
+            configurationLayout->addWidget(widget);
+    }
+    configurationLayout->addStretch(1);
+
+    if (outputPanel)
+        previewLayout->addWidget(outputPanel, 1);
+
+    configurationPane->setMinimumWidth(520);
+    previewPane->setMinimumWidth(320);
+    workspaceSplitter->setStretchFactor(0, 3);
+    workspaceSplitter->setStretchFactor(1, 2);
+    workspaceSplitter->setSizes({ 620, 360 });
+
     on_btn_reset_clicked();
     syncModeUi();
     on_siteTabs_currentChanged(ui->siteTabs->currentIndex());
 
-    if (ui->mainLayout) {
-        ui->mainLayout->setStretch(ui->mainLayout->indexOf(apGroupSelectorFrame), 0);
-        ui->mainLayout->setStretch(ui->mainLayout->indexOf(ui->siteTabs), 0);
-        ui->mainLayout->setStretch(ui->mainLayout->indexOf(ciscoFrame), 1);
-        ui->mainLayout->setStretch(ui->mainLayout->indexOf(outputPanel), 0);
-    }
     if (ui->siteTabs) {
         ui->siteTabs->setMinimumHeight(34);
         ui->siteTabs->setMaximumHeight(36);
@@ -4259,7 +4308,7 @@ void ACS_Wynn_Builder::syncModeUi() {
 
     ui->card1->setVisible(!isCiscoMode);
     ui->siteTabs->setVisible(!isCiscoMode);
-    ui->card4->setVisible(true);
+    ui->card4->setVisible(!isCiscoMode);
     ui->btn_wizard->setVisible(true);
     ui->btn_generate->setVisible(!isCiscoMode);
     ui->btn_remove->setVisible(!isCiscoMode);
