@@ -59,7 +59,7 @@
         "RR-Strip_Canyon_View",
         "RR-Summerlin_Ballroom",
         "RR-Tbones_Crimson",
-        "RR_Veranda_Rooms"
+        "RR-Veranda_Rooms"
     ],
     "stations_misc": [
         ".Boulder-Convention",
@@ -153,14 +153,16 @@
         "default"
     ],
     "updater_enabled": true,
-    "updater_metadata_url": "https://gist.githubusercontent.com/congiirepair/608d6a71617c2c8fba6dd2f7ee134dcc/raw/version.txt",
-    "updater_package_url": "https://github.com/congiirepair/ACS_Wynn_Builder/releases/download/1.0.4/ACS_Wynn_Builder_Update.zip",
-    "updater_expected_sha256": "711b1f0eb54026f2cff413e14af2aab5d0b725aa64396e281cf6bdf9958d932b",
+    "updater_metadata_url": "https://api.github.com/repos/congiirepair/ACS_Wynn_Builder/releases/latest",
+    "updater_package_url": "https://github.com/congiirepair/ACS_Wynn_Builder/releases/download/1.0.8/ACS_Wynn_Builder_Update.zip",
+    "updater_expected_sha256": "7232b492a7adb838841f8540d0a7618e957b7a933b44d9cbb6a6ef4dac2b0d0d",
     "updater_allowed_hosts": [
+        "api.github.com",
         "gist.githubusercontent.com",
         "github.com",
         "githubusercontent.com",
         "objects.githubusercontent.com",
         "release-assets.githubusercontent.com"
-    ]
+    ],
+    "cisco_controller_ip": "98.173.86.102"
 }

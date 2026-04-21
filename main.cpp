@@ -4,39 +4,47 @@
 #include <QPixmap>
 #include <QTimer> 
 #include <QDebug>
+#include <QSize>
+#include <QScreen>
+#include <QElapsedTimer>
 
 int main(int argc, char* argv[])
 {
     QApplication a(argc, argv);
+    const QSize targetSplashSize(526, 401);
+    const qreal splashDpr = a.primaryScreen() ? a.primaryScreen()->devicePixelRatio() : 1.0;
+    const QSize renderedSplashSize(qRound(targetSplashSize.width() * splashDpr),
+                                   qRound(targetSplashSize.height() * splashDpr));
 
-    // 1. Load the splash image from the simplified root path
     QPixmap pixmap(":/splash.png");
-
-    // Check if the image is actually found
     if (pixmap.isNull()) {
-        qDebug() << "IMAGE ERROR: splash.png not found in resources!";
-        pixmap = QPixmap(600, 400);
+        qDebug() << "IMAGE ERROR: splash image not found in resources!";
+        pixmap = QPixmap(renderedSplashSize);
         pixmap.fill(QColor("#1C1918")); // Fallback dark background
     }
 
-    // 2. Setup and show the Splash Screen
+    pixmap = pixmap.scaled(renderedSplashSize, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+    pixmap.setDevicePixelRatio(splashDpr);
+
+    // Show a short branded splash while the main window initializes.
     QSplashScreen splash(pixmap);
     splash.show();
-    splash.showMessage("ACS Hotel Wifi Tool - Initializing...",
+    splash.showMessage("Preparing ACS Hotel WiFi Builder...",
         Qt::AlignBottom | Qt::AlignCenter, Qt::white);
 
-    // 3. Keep the UI responsive while loading
+    QElapsedTimer splashTimer;
+    splashTimer.start();
     a.processEvents();
 
-    // 4. Initialize Main Window (but don't show it yet)
+    // Build the main window first, then only keep the splash around briefly.
     ACS_Wynn_Builder w;
 
-    // 5. Use QTimer::singleShot to handle the transition
-    // This waits 2.5 seconds, then shows the main window and closes the splash
-    QTimer::singleShot(2500, [&]() {
+    const int minimumSplashMs = 650;
+    const int remainingDelayMs = qMax(0, minimumSplashMs - static_cast<int>(splashTimer.elapsed()));
+    QTimer::singleShot(remainingDelayMs, [&]() {
         w.show();
         splash.finish(&w);
-        });
+    });
 
     return a.exec();
 }

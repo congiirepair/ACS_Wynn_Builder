@@ -40,6 +40,7 @@
 #include <QStandardPaths>
 #include <QEventLoop>
 #include <QTimer>
+#include <QScrollArea>
 
 #include "ui_ACS_Wynn_Builder.h"
 #include <libssh/libssh.h>
@@ -66,6 +67,7 @@ struct ApGroupData {
     // instead of being hardcoded in two separate places in the source.
     QString wynnControllerIp = "172.25.78.148";
     QString stationsControllerIp = "24.120.186.116";
+    QString ciscoControllerIp = "98.173.86.102";
     QString wynnConfigPath = "/md/WYNN-ENCORE-CONV";
     QString stationsConfigPath = "/mm";
 };
@@ -96,6 +98,8 @@ QString buildArubaConfig(const QString& ssid,
     const QString& auth,
     const QString& psk,
     const QString& role,
+    bool           hideSsid,
+    bool           splashPage,
     int            siteIdx,
     const QStringList& groups,
     const ApGroupData& apData);
@@ -107,6 +111,7 @@ QString buildCiscoWlanConfig(const QString& ssid,
     const QString& companyName,
     const QString& removalDate,
     const QString& maxClients,
+    bool           splashPage,
     const QStringList& groups);
 
 // ====================================================
@@ -166,6 +171,7 @@ private:
     QString currentUser;
     QString currentPassword;
     void closeSession();
+    void deployPersistentInternal(QString script, bool allowReconnect);
     void checkWlanIdsPersistentInternal(bool allowReconnect);
 };
 
@@ -236,7 +242,7 @@ public:
     // FIX (Architecture): Receives ApGroupData so it can read IPs without coupling to main window.
     WizardPageTarget(ApGroupData data,
         QString explicitIp = QString(),
-        QString explicitUser = QString("admin"),
+        QString explicitUser = QString(),
         QString title = QString("Step 5: Controller Target"),
         QWidget* parent = nullptr);
     void initializePage() override;
@@ -279,16 +285,27 @@ private:
 class WizardPage6 : public QWizardPage {
     Q_OBJECT
 public:
-    WizardPage6(QPlainTextEdit* preview, DeploymentOptions options = {}, QString title = QString("Step 7: Deployment"), QWidget* parent = nullptr);
+    WizardPage6(QPlainTextEdit* preview,
+        class ACS_Wynn_Builder* owner = nullptr,
+        DeploymentOptions options = {},
+        QString title = QString("Step 7: Deployment"),
+        QWidget* parent = nullptr);
     bool validatePage() override;
     void initializePage() override;
     bool isComplete() const override;
     QPlainTextEdit* sshLogOutput;
 private:
+    class ACS_Wynn_Builder* wizardOwner = nullptr;
     QPlainTextEdit* previewOutput;
     bool deployComplete;
     DeploymentOptions deployOptions;
     QString pageTitle;
+    bool waitingForPersistentConnect = false;
+    bool persistentDeployStarted = false;
+    QString pendingScript;
+    QMetaObject::Connection logConnection;
+    QMetaObject::Connection connectFinishedConnection;
+    QMetaObject::Connection deployFinishedConnection;
 };
 
 // ====================================================
@@ -301,9 +318,12 @@ public:
     ACS_Wynn_Builder(QWidget* parent = nullptr);
     ~ACS_Wynn_Builder();
     bool hasActiveCiscoSession() const;
+    bool hasActiveControllerSession(bool isCiscoMode) const;
     QString activeCiscoSessionIp() const;
     QString activeCiscoSessionUser() const;
+    QString defaultCiscoControllerIp() const;
     void setCiscoSessionCredentials(const QString& ip, const QString& user, const QString& pass);
+    ControllerSessionManager* controllerSessionManager() const;
 
 protected:
     void mousePressEvent(QMouseEvent* event) override;
@@ -311,6 +331,7 @@ protected:
 
 signals:
     void ciscoSessionStateChanged();
+    void ciscoSuggestedWlanIdChanged(const QString& wlanId);
 
 private slots:
     void on_siteTabs_currentChanged(int index);
@@ -328,6 +349,7 @@ private slots:
     void on_btn_select_ap_groups_clicked();
     void on_btn_check_wlan_ids_clicked();
     void handleSshLog(QString message);
+    void on_btn_update_app_clicked();
 
     void updateLivePreview();
     void onSearchWynn(const QString& text);
@@ -343,12 +365,12 @@ private slots:
 private:
     Ui::ACS_Wynn_BuilderClass* ui;
     QPoint dragPosition;
-    ssh_session ciscoPersistentSession = nullptr;
-    ssh_channel ciscoPersistentChannel = nullptr;
     bool ciscoSessionConnected = false;
     QString ciscoSessionIp;
     QString ciscoSessionUser;
     bool ciscoSessionIsCiscoMode = false;
+    bool pendingAutoCiscoWlanIdSelection = false;
+    bool pendingPostDeployCiscoWlanRefresh = false;
     bool pendingPersistentDeploy = false;
     bool pendingPersistentDeployIsCiscoMode = false;
     QString pendingPersistentDeployScript;
@@ -359,6 +381,14 @@ private:
     QLabel* sshSessionStatus = nullptr;
     QDialog* outputDialog = nullptr;
     QPlainTextEdit* outputDialogText = nullptr;
+    QFrame* heroFrame = nullptr;
+    QLabel* heroTitleLabel = nullptr;
+    QLabel* heroSubtitleLabel = nullptr;
+    QLabel* modeBadgeLabel = nullptr;
+    QLabel* siteBadgeLabel = nullptr;
+    QLabel* sessionBadgeLabel = nullptr;
+    QLabel* outputTitleLabel = nullptr;
+    QLabel* outputSubtitleLabel = nullptr;
 
     QTreeWidget* tree_wynn;
     QTreeWidget* tree_stations;
@@ -394,6 +424,9 @@ private:
     QCheckBox* chk_cisco_legacy = nullptr;
     QCheckBox* chk_cisco_encore = nullptr;
     QCheckBox* chk_cisco_expansion = nullptr;
+    QCheckBox* chkHideSsid = nullptr;
+    QCheckBox* chkArubaSplashPage = nullptr;
+    QCheckBox* chkCiscoSplashPage = nullptr;
 
     // FIX (Architecture): All AP group data lives in one struct, kept private.
     ApGroupData apData;
@@ -404,17 +437,20 @@ private:
     QNetworkAccessManager* versionCheckManager;
     QNetworkAccessManager* downloadManager;
 
-    const QString CURRENT_VERSION = "1.0.6";
-    void checkForUpdates();
+    QPushButton* btnUpdateApp = nullptr;
+    const QString CURRENT_VERSION = "1.1.5";
+    void checkForUpdates(bool interactive = false);
 
     QNetworkReply* downloadReply = nullptr;
     QFile* downloadFile = nullptr;
     QString updateZipPath;
     QString updateBatchPath;
     QString updateExtractPath;
+    QString resolvedUpdateVersion;
     QUrl resolvedUpdatePackageUrl;
     QString resolvedUpdateSha256;
     QStringList resolvedUpdateAllowedHosts;
+    bool updateCheckInteractive = false;
 
     QString    buildConfigScript();
     QString    buildCiscoConfigScript();
@@ -437,15 +473,12 @@ private:
         QString* expectedSha256,
         QStringList* allowedHosts) const;
     int compareVersionStrings(const QString& left, const QString& right) const;
+    void refreshWorkspaceSummary();
     void syncModeUi();
     void loadApGroupsFromJson();
     void populateTree(QTreeWidget* tree, int siteIndex);
     void executeSearch(QTreeWidget* tree, const QString& text);
     void applyAdaptiveTheme();
-    bool connectPersistentCiscoSession(const QString& ip, const QString& user, const QString& pass, bool isCiscoMode, QString* errorMessage = nullptr);
-    bool deployViaPersistentCiscoSession(const QString& script, QString* errorMessage = nullptr);
-    bool isPersistentCiscoSessionAlive() const;
-    void disconnectPersistentCiscoSession(const QString& logMessage = QString());
     void updateCiscoConnectionUi();
     void ensureSshSessionDialog(const QString& title, const QString& statusText, bool clearLog = true);
     void ensureOutputDialog(const QString& title, bool clearOutput = false);
