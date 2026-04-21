@@ -3471,34 +3471,13 @@ void ACS_Wynn_Builder::ensureSshSessionDialog(const QString& title, const QStrin
 }
 
 void ACS_Wynn_Builder::ensureOutputDialog(const QString& title, bool clearOutput) {
-    if (!outputDialog) {
-        outputDialog = new QDialog(this);
-        outputDialog->setAttribute(Qt::WA_DeleteOnClose, false);
-        outputDialog->setWindowTitle(title.isEmpty() ? "ACS Live Console" : title);
-        outputDialog->resize(980, 620);
+    Q_UNUSED(title);
+    Q_UNUSED(clearOutput);
 
-        QVBoxLayout* layout = new QVBoxLayout(outputDialog);
-        layout->setContentsMargins(12, 12, 12, 12);
-        layout->setSpacing(10);
-
-        QLabel* heading = new QLabel("Connected live output window", outputDialog);
-        heading->setObjectName("panelTitle");
-        QLabel* subtitle = new QLabel("This window stays synchronized with the main builder preview and deployment transcript.", outputDialog);
-        subtitle->setObjectName("panelSubtitle");
-        subtitle->setWordWrap(true);
-
-        outputDialogText = new QPlainTextEdit(outputDialog);
-        outputDialogText->setReadOnly(true);
-        outputDialogText->setLineWrapMode(QPlainTextEdit::NoWrap);
-
-        layout->addWidget(heading);
-        layout->addWidget(subtitle);
-        layout->addWidget(outputDialogText, 1);
-    }
-
-    outputDialog->setWindowTitle(title.isEmpty() ? "ACS Live Console" : title);
-    if (clearOutput && outputDialogText)
-        outputDialogText->clear();
+    // The builder now uses the embedded output panel exclusively.
+    // If an older session created the detached dialog, make sure it stays hidden.
+    if (outputDialog && outputDialog->isVisible())
+        outputDialog->hide();
 }
 
 void ACS_Wynn_Builder::setOutputText(const QString& text, const QString& title) {
