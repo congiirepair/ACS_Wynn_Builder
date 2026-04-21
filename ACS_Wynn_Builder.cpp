@@ -4823,12 +4823,19 @@ bool ACS_Wynn_Builder::fetchGithubReleaseMetadataForVersion(const QString& versi
             const QString candidateName = asset.value("name").toString().trimmed();
             const QString downloadUrl = asset.value("browser_download_url").toString().trimmed();
             QString digest = asset.value("digest").toString().trimmed();
-            if (candidateName != assetName || downloadUrl.isEmpty())
+            if (downloadUrl.isEmpty())
                 continue;
 
             if (digest.startsWith("sha256:", Qt::CaseInsensitive))
                 digest = digest.mid(QString("sha256:").size());
             digest.remove(QRegularExpression("\\s+"));
+
+            const bool exactAssetMatch = QString::compare(candidateName, assetName, Qt::CaseInsensitive) == 0;
+            const bool usableFallbackAsset = candidateName.endsWith(".zip", Qt::CaseInsensitive)
+                || candidateName.endsWith(".exe", Qt::CaseInsensitive)
+                || assets.size() == 1;
+            if (!exactAssetMatch && !usableFallbackAsset)
+                continue;
 
             *packageUrl = QUrl(downloadUrl);
             // Never carry forward an older release checksum onto a newer asset.
@@ -5184,7 +5191,7 @@ void ACS_Wynn_Builder::onDownloadFinished() {
             << "Expand-Archive -LiteralPath $zip -DestinationPath $extract -Force\n"
             << "$items = Get-ChildItem -LiteralPath $extract\n"
             << "$source = if ($items.Count -eq 1 -and $items[0].PSIsContainer) { $items[0].FullName } else { $extract }\n"
-            << "Copy-Item -LiteralPath (Join-Path $source '*') -Destination $target -Recurse -Force\n"
+            << "Get-ChildItem -LiteralPath $source -Force | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $target -Recurse -Force }\n"
             << "Start-Process -FilePath $targetExe -WorkingDirectory $target\n";
     }
     out << "Remove-Item -LiteralPath \"" << nativePackagePath << "\" -Force -ErrorAction SilentlyContinue\n"
