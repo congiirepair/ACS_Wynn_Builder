@@ -438,7 +438,7 @@ private:
     QNetworkAccessManager* downloadManager;
 
     QPushButton* btnUpdateApp = nullptr;
-    const QString CURRENT_VERSION = "2.3.7";
+    const QString CURRENT_VERSION = "2.3.8";
     void checkForUpdates(bool interactive = false);
 
     QNetworkReply* downloadReply = nullptr;
