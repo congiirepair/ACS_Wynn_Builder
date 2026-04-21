@@ -2808,7 +2808,7 @@ ACS_Wynn_Builder::ACS_Wynn_Builder(QWidget* parent)
         ui->text_output->setPlaceholderText("Your live preview, generated script, and deployment transcript will appear here.");
     }
 
-    const QList<QPushButton*> primaryButtons = { ui->btn_generate, ui->btn_generate_cisco, ui->btn_test_ssh, ui->btn_open_mremote, ui->btn_deploy };
+    const QList<QPushButton*> primaryButtons = { ui->btn_generate, ui->btn_generate_cisco, ui->btn_test_ssh, ui->btn_deploy };
     for (QPushButton* button : primaryButtons) {
         if (!button)
             continue;
@@ -2817,7 +2817,7 @@ ACS_Wynn_Builder::ACS_Wynn_Builder(QWidget* parent)
     }
     if (ui->btn_open_mremote)
         ui->btn_open_mremote->hide();
-    const QList<QPushButton*> secondaryButtons = { ui->btn_remove, ui->btn_copy, ui->btn_reset };
+    const QList<QPushButton*> secondaryButtons = { ui->btn_copy, ui->btn_reset };
     for (QPushButton* button : secondaryButtons) {
         if (!button)
             continue;
@@ -2829,17 +2829,12 @@ ACS_Wynn_Builder::ACS_Wynn_Builder(QWidget* parent)
     actionPanel->setObjectName("toolbarCard");
     QVBoxLayout* actionPanelLayout = new QVBoxLayout(actionPanel);
     actionPanelLayout->setContentsMargins(12, 10, 12, 10);
-    actionPanelLayout->setSpacing(6);
+    actionPanelLayout->setSpacing(0);
 
-    QWidget* workflowActionsRow = new QWidget(actionPanel);
-    QHBoxLayout* workflowActionsLayout = new QHBoxLayout(workflowActionsRow);
-    workflowActionsLayout->setContentsMargins(0, 0, 0, 0);
-    workflowActionsLayout->setSpacing(8);
-
-    QWidget* utilityActionsRow = new QWidget(actionPanel);
-    QHBoxLayout* utilityActionsLayout = new QHBoxLayout(utilityActionsRow);
-    utilityActionsLayout->setContentsMargins(0, 0, 0, 0);
-    utilityActionsLayout->setSpacing(8);
+    QWidget* actionButtonsRow = new QWidget(actionPanel);
+    QHBoxLayout* actionButtonsLayout = new QHBoxLayout(actionButtonsRow);
+    actionButtonsLayout->setContentsMargins(0, 0, 0, 0);
+    actionButtonsLayout->setSpacing(8);
 
     QFrame* outputPanel = new QFrame(this);
     outputPanel->setObjectName("outputPanel");
@@ -2857,27 +2852,20 @@ ACS_Wynn_Builder::ACS_Wynn_Builder(QWidget* parent)
     if (ui->buttonLayout)
         ui->mainLayout->removeItem(ui->buttonLayout);
 
-    workflowActionsLayout->addStretch(1);
-    for (QPushButton* button : { ui->btn_generate, ui->btn_generate_cisco, ui->btn_deploy }) {
+    actionButtonsLayout->addStretch(1);
+    for (QPushButton* button : { ui->btn_generate, ui->btn_generate_cisco, ui->btn_copy, ui->btn_deploy, ui->btn_reset }) {
         if (ui->buttonLayout)
             ui->buttonLayout->removeWidget(button);
-        workflowActionsLayout->addWidget(button);
+        actionButtonsLayout->addWidget(button);
     }
-    workflowActionsLayout->addStretch(1);
-
-    utilityActionsLayout->addStretch(1);
-    for (QPushButton* button : { ui->btn_test_ssh, ui->btn_remove, ui->btn_copy, ui->btn_reset, ui->btn_open_mremote }) {
-        if (ui->buttonLayout)
-            ui->buttonLayout->removeWidget(button);
-        utilityActionsLayout->addWidget(button);
-    }
-    utilityActionsLayout->addStretch(1);
+    actionButtonsLayout->addStretch(1);
 
     if (ui->btn_wizard)
         ui->btn_wizard->hide();
+    if (ui->btn_remove)
+        ui->btn_remove->hide();
 
-    actionPanelLayout->addWidget(workflowActionsRow);
-    actionPanelLayout->addWidget(utilityActionsRow);
+    actionPanelLayout->addWidget(actionButtonsRow);
     outputPanelLayout->addWidget(outputTitleLabel);
     if (ui->text_output)
         ui->mainLayout->removeWidget(ui->text_output);
