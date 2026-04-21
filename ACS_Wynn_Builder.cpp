@@ -5105,7 +5105,7 @@ void ACS_Wynn_Builder::startUpdateDownload(const QUrl& url) {
     QDir(payloadRoot).removeRecursively();
 
     updateZipPath = QDir(stagingRoot).filePath(packageIsExecutable ? "update.exe" : "update.zip");
-    updateBatchPath = QDir(stagingRoot).filePath("update.bat");
+    updateBatchPath = QDir(stagingRoot).filePath("update.ps1");
     updateExtractPath = payloadRoot;
 
     QFile::remove(updateZipPath);
@@ -5186,8 +5186,8 @@ void ACS_Wynn_Builder::onDownloadFinished() {
         return;
     }
 
-    QFile batchFile(updateBatchPath);
-    if (!batchFile.open(QIODevice::WriteOnly | QIODevice::Text)) {
+    QFile updateScript(updateBatchPath);
+    if (!updateScript.open(QIODevice::WriteOnly | QIODevice::Text)) {
         QMessageBox::critical(this, "Update Failed",
             "The updater could not create the installer script.");
         QFile::remove(updateZipPath);
@@ -5202,35 +5202,38 @@ void ACS_Wynn_Builder::onDownloadFinished() {
         QDir(QCoreApplication::applicationDirPath()).filePath(QFileInfo(QCoreApplication::applicationFilePath()).fileName()));
     const bool packageIsExecutable = nativePackagePath.endsWith(".exe", Qt::CaseInsensitive);
 
-    QTextStream out(&batchFile);
-    out << "@echo off\n";
-    out << "timeout /t 6 /nobreak > NUL\n";
-    out << "powershell -NoProfile -ExecutionPolicy Bypass -Command ";
+    QTextStream out(&updateScript);
+    out << "Start-Sleep -Seconds 6\n";
     if (packageIsExecutable) {
-        out << "\"$package = \\\"" << nativePackagePath << "\\\"; "
-            << "$targetExe = \\\"" << nativeTargetExePath << "\\\"; "
-            << "$targetDir = Split-Path -Parent $targetExe; "
-            << "Copy-Item -LiteralPath $package -Destination $targetExe -Force; "
-            << "Start-Process -FilePath $targetExe -WorkingDirectory $targetDir\"\n";
+        out << "$package = \"" << nativePackagePath << "\"\n"
+            << "$targetExe = \"" << nativeTargetExePath << "\"\n"
+            << "$targetDir = Split-Path -Parent $targetExe\n"
+            << "Copy-Item -LiteralPath $package -Destination $targetExe -Force\n"
+            << "Start-Process -FilePath $targetExe -WorkingDirectory $targetDir\n";
     } else {
-        out << "\"$zip = \\\"" << nativePackagePath << "\\\"; "
-            << "$extract = \\\"" << nativeExtractPath << "\\\"; "
-            << "$target = \\\"" << nativeAppDir << "\\\"; "
-            << "$targetExe = \\\"" << nativeTargetExePath << "\\\"; "
-            << "Remove-Item -LiteralPath $extract -Recurse -Force -ErrorAction SilentlyContinue; "
-            << "Expand-Archive -LiteralPath $zip -DestinationPath $extract -Force; "
-            << "$items = Get-ChildItem -LiteralPath $extract; "
-            << "$source = if ($items.Count -eq 1 -and $items[0].PSIsContainer) { $items[0].FullName } else { $extract }; "
-            << "Copy-Item -LiteralPath (Join-Path $source '*') -Destination $target -Recurse -Force; "
-            << "Start-Process -FilePath $targetExe -WorkingDirectory $target\"\n";
+        out << "$zip = \"" << nativePackagePath << "\"\n"
+            << "$extract = \"" << nativeExtractPath << "\"\n"
+            << "$target = \"" << nativeAppDir << "\"\n"
+            << "$targetExe = \"" << nativeTargetExePath << "\"\n"
+            << "Remove-Item -LiteralPath $extract -Recurse -Force -ErrorAction SilentlyContinue\n"
+            << "Expand-Archive -LiteralPath $zip -DestinationPath $extract -Force\n"
+            << "$items = Get-ChildItem -LiteralPath $extract\n"
+            << "$source = if ($items.Count -eq 1 -and $items[0].PSIsContainer) { $items[0].FullName } else { $extract }\n"
+            << "Copy-Item -LiteralPath (Join-Path $source '*') -Destination $target -Recurse -Force\n"
+            << "Start-Process -FilePath $targetExe -WorkingDirectory $target\n";
     }
-    out << "del /f /q \"" << nativePackagePath << "\"\n";
-    out << "powershell -NoProfile -ExecutionPolicy Bypass -Command "
-        << "\"Remove-Item -LiteralPath \\\"" << nativeExtractPath << "\\\" -Recurse -Force -ErrorAction SilentlyContinue\"\n";
-    out << "del /f /q \"%~f0\"\n";
-    batchFile.close();
+    out << "Remove-Item -LiteralPath \"" << nativePackagePath << "\" -Force -ErrorAction SilentlyContinue\n"
+        << "Remove-Item -LiteralPath \"" << nativeExtractPath << "\" -Recurse -Force -ErrorAction SilentlyContinue\n"
+        << "$scriptPath = $MyInvocation.MyCommand.Path\n"
+        << "Start-Sleep -Milliseconds 500\n"
+        << "Remove-Item -LiteralPath $scriptPath -Force -ErrorAction SilentlyContinue\n";
+    updateScript.close();
 
-    if (!QProcess::startDetached("cmd.exe", QStringList() << "/c" << updateBatchPath)) {
+    if (!QProcess::startDetached("powershell.exe", QStringList()
+        << "-NoProfile"
+        << "-ExecutionPolicy" << "Bypass"
+        << "-WindowStyle" << "Hidden"
+        << "-File" << updateBatchPath)) {
         QMessageBox::critical(this, "Update Failed",
             "The updater could not launch the installer script.");
         QFile::remove(updateZipPath);
