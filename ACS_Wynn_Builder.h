@@ -401,12 +401,14 @@ private:
     QFrame* apGroupSelectorFrame = nullptr;
     QPushButton* btnSelectApGroups = nullptr;
     QLabel* apGroupSummaryLabel = nullptr;
+    QFrame* actionPanelFrame = nullptr;
     QFrame* buyoutOptionsFrame = nullptr;
     QWidget* wynnBuyoutOptionsRow = nullptr;
     QWidget* stationsBuyoutOptionsRow = nullptr;
     QWidget* ciscoBuyoutOptionsRow = nullptr;
     QPushButton* btnCheckWlanIds = nullptr;
     QFrame* ciscoFrame = nullptr;
+    QFrame* ciscoLoginFrame = nullptr;
     QLineEdit* ciscoControllerIpField = nullptr;
     QLineEdit* ciscoControllerUserField = nullptr;
     QLineEdit* ciscoControllerPassField = nullptr;
@@ -438,7 +440,7 @@ private:
     QNetworkAccessManager* downloadManager;
 
     QPushButton* btnUpdateApp = nullptr;
-    const QString CURRENT_VERSION = "2.3.8";
+const QString CURRENT_VERSION = "2.3.9";
     void checkForUpdates(bool interactive = false);
 
     QNetworkReply* downloadReply = nullptr;

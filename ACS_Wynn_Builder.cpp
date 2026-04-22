@@ -930,6 +930,7 @@ QString buildAppStyleSheet(bool darkMode) {
         QFrame#apGroupSelectorFrame,
         QFrame#buyoutOptionsFrame,
         QFrame#ciscoFrame,
+        QFrame#ciscoLoginFrame,
         QFrame#card1,
         QFrame#card4,
         QTabWidget#siteTabs,
@@ -1135,6 +1136,7 @@ QString buildAppStyleSheet(bool darkMode) {
         QFrame#apGroupSelectorFrame,
         QFrame#buyoutOptionsFrame,
         QFrame#ciscoFrame,
+        QFrame#ciscoLoginFrame,
         QFrame#card1,
         QFrame#card4,
         QTabWidget#siteTabs,
@@ -2817,7 +2819,7 @@ ACS_Wynn_Builder::ACS_Wynn_Builder(QWidget* parent)
     }
     if (ui->btn_open_mremote)
         ui->btn_open_mremote->hide();
-    const QList<QPushButton*> secondaryButtons = { ui->btn_copy, ui->btn_reset };
+    const QList<QPushButton*> secondaryButtons = { ui->btn_remove, ui->btn_copy, ui->btn_reset };
     for (QPushButton* button : secondaryButtons) {
         if (!button)
             continue;
@@ -2825,13 +2827,13 @@ ACS_Wynn_Builder::ACS_Wynn_Builder(QWidget* parent)
         button->setMinimumWidth(94);
     }
 
-    QFrame* actionPanel = new QFrame(this);
-    actionPanel->setObjectName("toolbarCard");
-    QVBoxLayout* actionPanelLayout = new QVBoxLayout(actionPanel);
+    actionPanelFrame = new QFrame(this);
+    actionPanelFrame->setObjectName("toolbarCard");
+    QVBoxLayout* actionPanelLayout = new QVBoxLayout(actionPanelFrame);
     actionPanelLayout->setContentsMargins(12, 10, 12, 10);
     actionPanelLayout->setSpacing(0);
 
-    QWidget* actionButtonsRow = new QWidget(actionPanel);
+    QWidget* actionButtonsRow = new QWidget(actionPanelFrame);
     QHBoxLayout* actionButtonsLayout = new QHBoxLayout(actionButtonsRow);
     actionButtonsLayout->setContentsMargins(0, 0, 0, 0);
     actionButtonsLayout->setSpacing(8);
@@ -2853,7 +2855,7 @@ ACS_Wynn_Builder::ACS_Wynn_Builder(QWidget* parent)
         ui->mainLayout->removeItem(ui->buttonLayout);
 
     actionButtonsLayout->addStretch(1);
-    for (QPushButton* button : { ui->btn_generate, ui->btn_generate_cisco, ui->btn_copy, ui->btn_deploy, ui->btn_reset }) {
+    for (QPushButton* button : { ui->btn_generate, ui->btn_generate_cisco, ui->btn_remove, ui->btn_copy, ui->btn_deploy, ui->btn_reset }) {
         if (ui->buttonLayout)
             ui->buttonLayout->removeWidget(button);
         actionButtonsLayout->addWidget(button);
@@ -2862,8 +2864,6 @@ ACS_Wynn_Builder::ACS_Wynn_Builder(QWidget* parent)
 
     if (ui->btn_wizard)
         ui->btn_wizard->hide();
-    if (ui->btn_remove)
-        ui->btn_remove->hide();
 
     actionPanelLayout->addWidget(actionButtonsRow);
     outputPanelLayout->addWidget(outputTitleLabel);
@@ -2944,12 +2944,11 @@ ACS_Wynn_Builder::ACS_Wynn_Builder(QWidget* parent)
     toolbarControlsLayout->setContentsMargins(0, 0, 0, 0);
     toolbarControlsLayout->setSpacing(8);
     toolbarControlsLayout->addWidget(modeTabs, 0, Qt::AlignLeft);
-    toolbarControlsLayout->addWidget(profilePresetFrame, 1);
+    toolbarControlsLayout->addStretch(1);
     btnUpdateApp = new QPushButton("UPDATE APP", toolbarCard);
     btnUpdateApp->setObjectName("btn_update_app");
     btnUpdateApp->setToolTip("Check GitHub for the latest published release and install it into this folder.");
     toolbarControlsLayout->addWidget(btnUpdateApp, 0, Qt::AlignRight);
-    toolbarControlsLayout->addStretch(1);
 
     toolbarCardLayout->addWidget(toolbarControlsRow);
     ui->mainLayout->insertWidget(ui->mainLayout->indexOf(ui->card1), toolbarCard);
@@ -3008,49 +3007,13 @@ ACS_Wynn_Builder::ACS_Wynn_Builder(QWidget* parent)
 
     ciscoFrame = new QFrame(this);
     ciscoFrame->setObjectName("ciscoFrame");
-    QGridLayout* ciscoLayout = new QGridLayout(ciscoFrame);
+    QVBoxLayout* ciscoLayout = new QVBoxLayout(ciscoFrame);
     ciscoLayout->setContentsMargins(14, 12, 14, 12);
-    ciscoLayout->setHorizontalSpacing(8);
-    ciscoLayout->setVerticalSpacing(8);
+    ciscoLayout->setSpacing(8);
 
-    QLabel* ciscoConnectHeader = new QLabel("Cisco Controller Session", ciscoFrame);
-    ciscoConnectHeader->setObjectName("panelTitle");
-    ciscoLayout->addWidget(ciscoConnectHeader, 0, 0, 1, 4);
-
-    ciscoConnectionStatusLabel = new QLabel("Cisco Session Status: Disconnected", ciscoFrame);
-    ciscoConnectionStatusLabel->setWordWrap(true);
-    ciscoConnectionStatusLabel->setObjectName("ciscoConnectionStatusLabel");
-    ciscoLayout->addWidget(ciscoConnectionStatusLabel, 1, 0, 1, 4);
-
-    QGridLayout* ciscoConnectionLayout = new QGridLayout();
-    ciscoConnectionLayout->setHorizontalSpacing(8);
-    ciscoConnectionLayout->setVerticalSpacing(6);
-    QLabel* ciscoIpLabel = new QLabel("IP:", ciscoFrame);
-    ciscoControllerIpField = new QLineEdit(ciscoFrame);
-    ciscoControllerIpField->setPlaceholderText("Cisco controller IP");
-    ciscoControllerIpField->setMaximumWidth(140);
-    QLabel* ciscoUserLabel = new QLabel("USER:", ciscoFrame);
-    ciscoControllerUserField = new QLineEdit(ciscoFrame);
-    ciscoControllerUserField->setPlaceholderText("Username");
-    ciscoControllerUserField->setMaximumWidth(110);
-    QLabel* ciscoPassLabel = new QLabel("PASS:", ciscoFrame);
-    ciscoControllerPassField = new QLineEdit(ciscoFrame);
-    ciscoControllerPassField->setPlaceholderText("Controller password");
-    ciscoControllerPassField->setEchoMode(QLineEdit::Password);
-    ciscoControllerPassField->setInputMethodHints(Qt::ImhSensitiveData | Qt::ImhNoPredictiveText | Qt::ImhNoAutoUppercase);
-    ciscoConnectionLayout->addWidget(ciscoIpLabel, 0, 0);
-    ciscoConnectionLayout->addWidget(ciscoControllerIpField, 0, 1);
-    ciscoConnectionLayout->addWidget(ciscoUserLabel, 0, 2);
-    ciscoConnectionLayout->addWidget(ciscoControllerUserField, 0, 3);
-    ciscoConnectionLayout->addWidget(ciscoPassLabel, 0, 4);
-    ciscoConnectionLayout->addWidget(ciscoControllerPassField, 0, 5);
-    ciscoConnectionLayout->addWidget(ui->btn_test_ssh, 0, 6);
-    ciscoConnectionLayout->setColumnStretch(7, 1);
-    ciscoLayout->addLayout(ciscoConnectionLayout, 2, 0, 1, 4);
-
-    QLabel* ciscoDetailsHeader = new QLabel("WLAN Configuration", ciscoFrame);
-    ciscoDetailsHeader->setObjectName("ciscoSectionHeader");
-    ciscoLayout->addWidget(ciscoDetailsHeader, 3, 0, 1, 4);
+    QLabel* ciscoDetailsHeader = new QLabel("Cisco WLAN Configuration", ciscoFrame);
+    ciscoDetailsHeader->setObjectName("panelTitle");
+    ciscoLayout->addWidget(ciscoDetailsHeader);
 
     ciscoDetailsFrame = new QFrame(ciscoFrame);
     QGridLayout* ciscoDetailsLayout = new QGridLayout(ciscoDetailsFrame);
@@ -3073,12 +3036,6 @@ ACS_Wynn_Builder::ACS_Wynn_Builder(QWidget* parent)
     addCiscoField(2, 0, "Password:", ciscoPassword, "Minimum 8 characters");
     chkCiscoSplashPage = new QCheckBox("Splash page (open WLAN)", ciscoDetailsFrame);
     ciscoDetailsLayout->addWidget(chkCiscoSplashPage, 2, 2, 1, 2);
-    btnCheckWlanIds = new QPushButton("CHECK WLAN IDS", ciscoDetailsFrame);
-    btnCheckWlanIds->setMinimumWidth(112);
-    btnCheckWlanIds->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    ciscoDetailsLayout->addWidget(btnCheckWlanIds, 4, 2, 1, 2);
-    connect(btnCheckWlanIds, &QPushButton::clicked, this, &ACS_Wynn_Builder::on_btn_check_wlan_ids_clicked);
-
     QLabel* ciscoMaxClientsLabel = new QLabel("Max Clients:", ciscoDetailsFrame);
     ciscoMaxClients = new QLineEdit(ciscoDetailsFrame);
     ciscoMaxClients->setPlaceholderText("10");
@@ -3092,8 +3049,14 @@ ACS_Wynn_Builder::ACS_Wynn_Builder(QWidget* parent)
     ciscoVlan->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     ciscoVlan->setMinimumContentsLength(10);
     ciscoVlan->setPlaceholderText("Select Interface or VLAN");
-    ciscoDetailsLayout->addWidget(ciscoVlanLabel, 4, 0);
-    ciscoDetailsLayout->addWidget(ciscoVlan, 4, 1);
+    ciscoDetailsLayout->addWidget(ciscoVlanLabel, 3, 0);
+    ciscoDetailsLayout->addWidget(ciscoVlan, 3, 1);
+
+    btnCheckWlanIds = new QPushButton("CHECK WLAN IDS", ciscoDetailsFrame);
+    btnCheckWlanIds->setMinimumWidth(112);
+    btnCheckWlanIds->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    ciscoDetailsLayout->addWidget(btnCheckWlanIds, 4, 0, 1, 2);
+    connect(btnCheckWlanIds, &QPushButton::clicked, this, &ACS_Wynn_Builder::on_btn_check_wlan_ids_clicked);
 
     chk_cisco_legacy = new QCheckBox("Legacy Buyout", ciscoDetailsFrame);
     chk_cisco_encore = new QCheckBox("Encore Buyout", ciscoDetailsFrame);
@@ -3105,21 +3068,58 @@ ACS_Wynn_Builder::ACS_Wynn_Builder(QWidget* parent)
         rowLayout->addStretch(1);
     }
 
-    search_cisco_wynn = new QLineEdit(ciscoDetailsFrame);
+    search_cisco_wynn = new QLineEdit(this);
     search_cisco_wynn->setPlaceholderText("Search Cisco AP Groups...");
-    ciscoDetailsLayout->addWidget(search_cisco_wynn, 5, 0, 1, 4);
 
-    tree_cisco_wynn = new QTreeWidget(ciscoDetailsFrame);
+    tree_cisco_wynn = new QTreeWidget(this);
     tree_cisco_wynn->setHeaderHidden(true);
     tree_cisco_wynn->setMinimumHeight(92);
-    ciscoDetailsLayout->addWidget(tree_cisco_wynn, 6, 0, 1, 4);
-    ciscoDetailsLayout->setRowStretch(6, 1);
     ciscoDetailsLayout->setColumnStretch(0, 0);
     ciscoDetailsLayout->setColumnStretch(1, 1);
     ciscoDetailsLayout->setColumnStretch(2, 0);
     ciscoDetailsLayout->setColumnStretch(3, 1);
-    ciscoLayout->addWidget(ciscoDetailsFrame, 4, 0, 1, 4);
-    ciscoLayout->setRowStretch(4, 1);
+    ciscoLayout->addWidget(ciscoDetailsFrame);
+
+    ciscoLoginFrame = new QFrame(this);
+    ciscoLoginFrame->setObjectName("ciscoLoginFrame");
+    QVBoxLayout* ciscoLoginLayout = new QVBoxLayout(ciscoLoginFrame);
+    ciscoLoginLayout->setContentsMargins(14, 12, 14, 12);
+    ciscoLoginLayout->setSpacing(8);
+
+    QLabel* ciscoConnectHeader = new QLabel("Cisco Controller Login", ciscoLoginFrame);
+    ciscoConnectHeader->setObjectName("panelTitle");
+    ciscoLoginLayout->addWidget(ciscoConnectHeader);
+
+    ciscoConnectionStatusLabel = new QLabel("Cisco Session Status: Disconnected", ciscoLoginFrame);
+    ciscoConnectionStatusLabel->setWordWrap(true);
+    ciscoConnectionStatusLabel->setObjectName("ciscoConnectionStatusLabel");
+    ciscoLoginLayout->addWidget(ciscoConnectionStatusLabel);
+
+    QGridLayout* ciscoConnectionLayout = new QGridLayout();
+    ciscoConnectionLayout->setHorizontalSpacing(8);
+    ciscoConnectionLayout->setVerticalSpacing(6);
+    QLabel* ciscoIpLabel = new QLabel("IP:", ciscoLoginFrame);
+    ciscoControllerIpField = new QLineEdit(ciscoLoginFrame);
+    ciscoControllerIpField->setPlaceholderText("Cisco controller IP");
+    ciscoControllerIpField->setMaximumWidth(140);
+    QLabel* ciscoUserLabel = new QLabel("USER:", ciscoLoginFrame);
+    ciscoControllerUserField = new QLineEdit(ciscoLoginFrame);
+    ciscoControllerUserField->setPlaceholderText("Username");
+    ciscoControllerUserField->setMaximumWidth(110);
+    QLabel* ciscoPassLabel = new QLabel("PASS:", ciscoLoginFrame);
+    ciscoControllerPassField = new QLineEdit(ciscoLoginFrame);
+    ciscoControllerPassField->setPlaceholderText("Controller password");
+    ciscoControllerPassField->setEchoMode(QLineEdit::Password);
+    ciscoControllerPassField->setInputMethodHints(Qt::ImhSensitiveData | Qt::ImhNoPredictiveText | Qt::ImhNoAutoUppercase);
+    ciscoConnectionLayout->addWidget(ciscoIpLabel, 0, 0);
+    ciscoConnectionLayout->addWidget(ciscoControllerIpField, 0, 1);
+    ciscoConnectionLayout->addWidget(ciscoUserLabel, 0, 2);
+    ciscoConnectionLayout->addWidget(ciscoControllerUserField, 0, 3);
+    ciscoConnectionLayout->addWidget(ciscoPassLabel, 0, 4);
+    ciscoConnectionLayout->addWidget(ciscoControllerPassField, 0, 5);
+    ciscoConnectionLayout->addWidget(ui->btn_test_ssh, 0, 6);
+    ciscoConnectionLayout->setColumnStretch(7, 1);
+    ciscoLoginLayout->addLayout(ciscoConnectionLayout);
 
     ciscoPassword->setEchoMode(QLineEdit::PasswordEchoOnEdit);
     ciscoPassword->setInputMethodHints(Qt::ImhSensitiveData | Qt::ImhNoPredictiveText | Qt::ImhNoAutoUppercase);
@@ -3139,7 +3139,9 @@ ACS_Wynn_Builder::ACS_Wynn_Builder(QWidget* parent)
         ciscoVlan->addItem(formatCiscoInterfaceLabel(interfaceOption), interfaceOption);
 
     ui->mainLayout->insertWidget(ui->mainLayout->indexOf(ui->siteTabs), ciscoFrame);
+    ui->mainLayout->insertWidget(ui->mainLayout->indexOf(ui->siteTabs), ciscoLoginFrame);
     ciscoFrame->hide();
+    ciscoLoginFrame->hide();
 
     auto mirrorLineEditText = [](QLineEdit* source, QLineEdit* target) {
         if (!source || !target)
@@ -3381,7 +3383,7 @@ ACS_Wynn_Builder::ACS_Wynn_Builder(QWidget* parent)
     previewLayout->setSpacing(0);
 
     if (ui->mainLayout) {
-        const QList<QWidget*> workspaceWidgets = { ui->card1, ui->siteTabs, apGroupSelectorFrame, buyoutOptionsFrame, ui->card4, ciscoFrame, actionPanel, outputPanel };
+        const QList<QWidget*> workspaceWidgets = { ui->card1, ui->siteTabs, apGroupSelectorFrame, buyoutOptionsFrame, ui->card4, ciscoFrame, ciscoLoginFrame, actionPanelFrame, outputPanel };
         for (QWidget* widget : workspaceWidgets) {
             if (!widget)
                 continue;
@@ -3390,12 +3392,14 @@ ACS_Wynn_Builder::ACS_Wynn_Builder(QWidget* parent)
         ui->mainLayout->insertWidget(workspaceInsertIndex < 0 ? 1 : workspaceInsertIndex, workspaceSplitter, 1);
     }
 
-    const QList<QWidget*> configurationWidgets = { ui->card1, ui->siteTabs, apGroupSelectorFrame, buyoutOptionsFrame, ui->card4, ciscoFrame, actionPanel };
+    const QList<QWidget*> configurationWidgets = { ui->card1, ui->siteTabs, apGroupSelectorFrame, buyoutOptionsFrame, ui->card4, ciscoFrame, ciscoLoginFrame };
     for (QWidget* widget : configurationWidgets) {
         if (widget)
             configurationLayout->addWidget(widget);
     }
     configurationLayout->addStretch(1);
+    if (actionPanelFrame)
+        configurationLayout->addWidget(actionPanelFrame);
 
     if (outputPanel)
         previewLayout->addWidget(outputPanel, 1);
@@ -3415,8 +3419,16 @@ ACS_Wynn_Builder::ACS_Wynn_Builder(QWidget* parent)
         ui->siteTabs->setMaximumHeight(36);
         ui->siteTabs->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
     }
+    if (ui->card4) {
+        ui->card4->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
+        ui->card4->setMaximumHeight(ui->card4->sizeHint().height() + 12);
+        if (ui->card4->layout())
+            ui->card4->layout()->setSizeConstraint(QLayout::SetMinimumSize);
+    }
     if (ciscoFrame)
-        ciscoFrame->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::MinimumExpanding);
+        ciscoFrame->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Minimum);
+    if (ciscoLoginFrame)
+        ciscoLoginFrame->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Minimum);
     updateApGroupSelectionSummary();
     refreshWorkspaceSummary();
     QTimer::singleShot(1200, this, [this]() { checkForUpdates(); });
@@ -4305,33 +4317,38 @@ void ACS_Wynn_Builder::syncModeUi() {
 
     if (QWidget* configurationPane = apGroupSelectorFrame ? apGroupSelectorFrame->parentWidget() : nullptr) {
         if (QVBoxLayout* configurationLayout = qobject_cast<QVBoxLayout*>(configurationPane->layout())) {
-            for (QWidget* widget : { apGroupSelectorFrame, buyoutOptionsFrame, ui->card4, ciscoFrame }) {
+            const QList<QWidget*> modeScopedWidgets = { ui->card4, ui->card1, ui->siteTabs, apGroupSelectorFrame, buyoutOptionsFrame, ciscoFrame, ciscoLoginFrame };
+            for (QWidget* widget : modeScopedWidgets) {
                 if (widget)
                     configurationLayout->removeWidget(widget);
             }
 
-            int insertIndex = configurationLayout->count();
+            int insertIndex = actionPanelFrame ? configurationLayout->indexOf(actionPanelFrame) : -1;
             if (insertIndex > 0)
-                --insertIndex; // Keep the trailing stretch at the bottom.
+                --insertIndex; // Insert above the stretch spacer that sits before the bottom action row.
+            if (insertIndex < 0)
+                insertIndex = configurationLayout->count();
 
             if (isCiscoMode) {
+                if (ciscoLoginFrame)
+                    configurationLayout->insertWidget(insertIndex++, ciscoLoginFrame);
                 if (ciscoFrame)
                     configurationLayout->insertWidget(insertIndex++, ciscoFrame);
                 if (apGroupSelectorFrame)
                     configurationLayout->insertWidget(insertIndex++, apGroupSelectorFrame);
                 if (buyoutOptionsFrame)
                     configurationLayout->insertWidget(insertIndex++, buyoutOptionsFrame);
-                if (ui->card4)
-                    configurationLayout->insertWidget(insertIndex++, ui->card4);
             } else {
+                if (ui->card4)
+                    configurationLayout->insertWidget(insertIndex++, ui->card4);
+                if (ui->card1)
+                    configurationLayout->insertWidget(insertIndex++, ui->card1);
+                if (ui->siteTabs)
+                    configurationLayout->insertWidget(insertIndex++, ui->siteTabs);
                 if (apGroupSelectorFrame)
                     configurationLayout->insertWidget(insertIndex++, apGroupSelectorFrame);
                 if (buyoutOptionsFrame)
                     configurationLayout->insertWidget(insertIndex++, buyoutOptionsFrame);
-                if (ui->card4)
-                    configurationLayout->insertWidget(insertIndex++, ui->card4);
-                if (ciscoFrame)
-                    configurationLayout->insertWidget(insertIndex++, ciscoFrame);
             }
         }
     }
@@ -4357,18 +4374,20 @@ void ACS_Wynn_Builder::syncModeUi() {
 
     if (ciscoFrame)
         ciscoFrame->setVisible(isCiscoMode);
+    if (ciscoLoginFrame)
+        ciscoLoginFrame->setVisible(isCiscoMode);
 
     if (isCiscoMode) {
         ui->entry_ip->setText(apData.ciscoControllerIp);
         ui->entry_ip->setReadOnly(true);
         if (profilePresetFrame)
-            profilePresetFrame->show();
+            profilePresetFrame->hide();
     }
     else {
         ui->entry_ip->setReadOnly(false);
         on_siteTabs_currentChanged(ui->siteTabs->currentIndex());
         if (profilePresetFrame)
-            profilePresetFrame->show();
+            profilePresetFrame->hide();
     }
     setMinimumHeight(minimumWindowHeight);
     updateBuyoutOptionsUi();
