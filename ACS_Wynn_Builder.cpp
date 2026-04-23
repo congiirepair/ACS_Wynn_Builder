@@ -2889,7 +2889,7 @@ ACS_Wynn_Builder::ACS_Wynn_Builder(QWidget* parent)
     ui->entry_ip->setPlaceholderText("Controller IP");
     ui->entry_ssh_pass->setPlaceholderText("Controller password");
     ui->entry_psk->setPlaceholderText("Minimum 8 characters");
-    ui->entry_psk->setEchoMode(QLineEdit::PasswordEchoOnEdit);
+    ui->entry_psk->setEchoMode(QLineEdit::Normal);
     ui->entry_psk->setInputMethodHints(Qt::ImhSensitiveData | Qt::ImhNoPredictiveText | Qt::ImhNoAutoUppercase);
     ui->entry_ssh_pass->setEchoMode(QLineEdit::Password);
     ui->entry_ssh_pass->setInputMethodHints(Qt::ImhSensitiveData | Qt::ImhNoPredictiveText | Qt::ImhNoAutoUppercase);
@@ -3121,7 +3121,7 @@ ACS_Wynn_Builder::ACS_Wynn_Builder(QWidget* parent)
     ciscoConnectionLayout->setColumnStretch(7, 1);
     ciscoLoginLayout->addLayout(ciscoConnectionLayout);
 
-    ciscoPassword->setEchoMode(QLineEdit::PasswordEchoOnEdit);
+    ciscoPassword->setEchoMode(QLineEdit::Normal);
     ciscoPassword->setInputMethodHints(Qt::ImhSensitiveData | Qt::ImhNoPredictiveText | Qt::ImhNoAutoUppercase);
     ciscoWlanId->setValidator(new QIntValidator(1, 512, this));
     ciscoMaxClients->setValidator(new QIntValidator(1, 5000, this));
