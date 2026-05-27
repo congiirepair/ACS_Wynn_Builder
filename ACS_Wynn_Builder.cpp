@@ -3848,7 +3848,7 @@ void ACS_Wynn_Builder::on_btn_remove_clicked() {
     }
     config << "no wlan virtual-ap \"" + ssid + "\"";
     config << "no wlan ssid-profile \"" + ssid + "\"";
-    config << "no wlan ht-ssid-profile \"" + ssid + "-HT\"";
+    config << "no wlan ht-ssid-profile \"" + ssid + "\"";
     config << "no aaa profile \"" + ssid + "\"";
     config << "no aaa authentication dot1x \"" + ssid + "\"";
     config << "end";
