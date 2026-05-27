@@ -4997,6 +4997,29 @@ int ACS_Wynn_Builder::compareVersionStrings(const QString& left, const QString& 
     return 0;
 }
 
+QString ACS_Wynn_Builder::installedVersionLabel() const {
+    const QString fallbackVersion = CURRENT_VERSION.trimmed();
+    const QString versionPath = QDir(QCoreApplication::applicationDirPath()).filePath("version.txt");
+    QFile versionFile(versionPath);
+    if (!versionFile.exists() || !versionFile.open(QIODevice::ReadOnly | QIODevice::Text))
+        return fallbackVersion;
+
+    const QString rawVersion = QString::fromUtf8(versionFile.readAll()).trimmed();
+    versionFile.close();
+    if (rawVersion.isEmpty())
+        return fallbackVersion;
+
+    QString normalizedVersion = rawVersion;
+    if (normalizedVersion.startsWith('v', Qt::CaseInsensitive) && normalizedVersion.size() > 1 && normalizedVersion.at(1).isDigit())
+        normalizedVersion.remove(0, 1);
+
+    const QRegularExpression versionPattern(R"(^\d+(?:\.\d+){1,3}$)");
+    if (!versionPattern.match(normalizedVersion).hasMatch())
+        return fallbackVersion;
+
+    return normalizedVersion;
+}
+
 void ACS_Wynn_Builder::cleanupUpdateArtifacts() {
     if (downloadReply) {
         downloadReply->deleteLater();
@@ -5087,7 +5110,8 @@ void ACS_Wynn_Builder::onVersionCheckComplete(QNetworkReply* reply) {
         return;
     }
 
-    if (!latestVersion.isEmpty() && compareVersionStrings(latestVersion, CURRENT_VERSION) > 0) {
+    const QString installedVersion = installedVersionLabel();
+    if (!latestVersion.isEmpty() && compareVersionStrings(latestVersion, installedVersion) > 0) {
         if (!isTrustedUpdateUrl(packageUrl, allowedHosts) || expectedSha256.size() != 64) {
             if (interactive) {
                 QMessageBox::warning(this,
@@ -5114,7 +5138,7 @@ void ACS_Wynn_Builder::onVersionCheckComplete(QNetworkReply* reply) {
                 this,
                 "Install Update",
                 QString("Current version: %1\nLatest GitHub release: %2\n\nDownload and install this update now?")
-                .arg(CURRENT_VERSION, latestVersion),
+                .arg(installedVersion, latestVersion),
                 QMessageBox::Yes | QMessageBox::No,
                 QMessageBox::Yes);
             if (response == QMessageBox::Yes)
@@ -5134,7 +5158,7 @@ void ACS_Wynn_Builder::onVersionCheckComplete(QNetworkReply* reply) {
     if (interactive) {
         QMessageBox::information(this,
             "Up To Date",
-            QString("This build is already current.\n\nInstalled version: %1").arg(CURRENT_VERSION));
+            QString("This build is already current.\n\nInstalled version: %1").arg(installedVersion));
     }
 
     reply->deleteLater();
