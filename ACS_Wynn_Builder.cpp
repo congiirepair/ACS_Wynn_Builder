@@ -5757,12 +5757,26 @@ void ACS_Wynn_Builder::onDownloadFinished() {
     const bool packageIsExecutable = nativePackagePath.endsWith(".exe", Qt::CaseInsensitive);
 
     QTextStream out(&updateScript);
-    out << "Start-Sleep -Seconds 6\n";
+    out << "$ErrorActionPreference = 'Stop'\n"
+        << "function Invoke-WithRetry([scriptblock]$Operation, [string]$Description) {\n"
+        << "    for ($attempt = 1; $attempt -le 12; $attempt++) {\n"
+        << "        try {\n"
+        << "            & $Operation\n"
+        << "            return\n"
+        << "        } catch {\n"
+        << "            if ($attempt -eq 12) {\n"
+        << "                throw ($Description + ': ' + $_.Exception.Message)\n"
+        << "            }\n"
+        << "            Start-Sleep -Milliseconds 750\n"
+        << "        }\n"
+        << "    }\n"
+        << "}\n"
+        << "Start-Sleep -Seconds 6\n";
     if (packageIsExecutable) {
         out << "$package = \"" << nativePackagePath << "\"\n"
             << "$targetExe = \"" << nativeTargetExePath << "\"\n"
             << "$targetDir = Split-Path -Parent $targetExe\n"
-            << "Copy-Item -LiteralPath $package -Destination $targetExe -Force\n"
+            << "Invoke-WithRetry { Copy-Item -LiteralPath $package -Destination $targetExe -Force } 'Replace executable'\n"
             << "Start-Process -FilePath $targetExe -WorkingDirectory $targetDir\n";
     } else {
         out << "$zip = \"" << nativePackagePath << "\"\n"
@@ -5773,7 +5787,11 @@ void ACS_Wynn_Builder::onDownloadFinished() {
             << "Expand-Archive -LiteralPath $zip -DestinationPath $extract -Force\n"
             << "$items = Get-ChildItem -LiteralPath $extract\n"
             << "$source = if ($items.Count -eq 1 -and $items[0].PSIsContainer) { $items[0].FullName } else { $extract }\n"
-            << "Get-ChildItem -LiteralPath $source -Force | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $target -Recurse -Force }\n"
+            << "Invoke-WithRetry {\n"
+            << "    Get-ChildItem -LiteralPath $source -Force | ForEach-Object {\n"
+            << "        Copy-Item -LiteralPath $_.FullName -Destination $target -Recurse -Force\n"
+            << "    }\n"
+            << "} 'Copy extracted update files'\n"
             << "Start-Process -FilePath $targetExe -WorkingDirectory $target\n";
     }
     out << "Remove-Item -LiteralPath \"" << nativePackagePath << "\" -Force -ErrorAction SilentlyContinue\n"
