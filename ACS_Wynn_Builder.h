@@ -363,7 +363,6 @@ private slots:
     void on_btn_check_wlan_ids_clicked();
     void handleSshLog(QString message);
     void on_btn_update_app_clicked();
-    void on_btn_testing_update_clicked();
 
     void updateLivePreview();
     void onSearchWynn(const QString& text);
@@ -455,8 +454,7 @@ private:
     QNetworkAccessManager* downloadManager;
 
     QPushButton* btnUpdateApp = nullptr;
-    QPushButton* btnTestingUpdateApp = nullptr;
-    const QString CURRENT_VERSION = "2.3.14";
+    const QString CURRENT_VERSION = "2.3.15";
     void checkForUpdates(bool interactive = false, bool testingChannel = false);
     QString installedVersionLabel() const;
 

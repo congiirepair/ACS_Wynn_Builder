@@ -15,6 +15,7 @@
 #include <QDialogButtonBox>
 #include <QScreen>
 #include <QSplitter>
+#include <QTcpSocket>
 #include <algorithm>
 #include <functional>
 
@@ -32,6 +33,11 @@ constexpr int kCiscoQuietWindowMs = 1200;
 constexpr int kCiscoReadPollMs = 100;
 constexpr int kUpdateChannelStable = 0;
 constexpr int kUpdateChannelTesting = 1;
+constexpr int kControllerTcpProbeTimeoutMs = 2500;
+constexpr long kCiscoTrustCheckTimeoutSeconds = 8;
+constexpr long kCiscoSessionConnectTimeoutSeconds = 20;
+constexpr long kArubaTrustCheckTimeoutSeconds = 10;
+constexpr long kArubaSessionConnectTimeoutSeconds = 10;
 
 QString normalizeVersionLabel(QString version)
 {
@@ -84,6 +90,32 @@ bool selectGithubReleaseObject(const QJsonDocument& document, bool preferPrerele
         return true;
     }
 
+    return false;
+}
+
+bool probeControllerEndpoint(const QString& ip, int port, int timeoutMs, QString* errorMessage)
+{
+    if (errorMessage)
+        errorMessage->clear();
+
+    QTcpSocket socket;
+    socket.connectToHost(ip.trimmed(), quint16(port));
+    if (socket.waitForConnected(timeoutMs)) {
+        socket.abort();
+        return true;
+    }
+
+    if (errorMessage) {
+        *errorMessage = QString("Could not reach %1:%2 within %3 ms. Check the controller IP and VPN connection.")
+            .arg(ip.trimmed())
+            .arg(port)
+            .arg(timeoutMs);
+        const QString socketError = socket.errorString().trimmed();
+        if (!socketError.isEmpty())
+            *errorMessage += "\n\nSocket error: " + socketError;
+    }
+
+    socket.abort();
     return false;
 }
 
@@ -797,6 +829,13 @@ bool ensureTrustedHost(QWidget* parent, const QString& ip, const QString& user,
     if (errorMessage)
         errorMessage->clear();
 
+    QString probeError;
+    if (!probeControllerEndpoint(ip, 22, kControllerTcpProbeTimeoutMs, &probeError)) {
+        if (errorMessage)
+            *errorMessage = probeError;
+        return false;
+    }
+
     ssh_session session = ssh_new();
     if (!session) {
         if (errorMessage)
@@ -804,7 +843,9 @@ bool ensureTrustedHost(QWidget* parent, const QString& ip, const QString& user,
         return false;
     }
 
-    int sshTimeoutSeconds = deployOptions.useCiscoShellLogin ? 120 : 60;
+    const long sshTimeoutSeconds = deployOptions.useCiscoShellLogin
+        ? kCiscoTrustCheckTimeoutSeconds
+        : kArubaTrustCheckTimeoutSeconds;
     applySshOptions(session, ip, user, deployOptions.useCiscoShellLogin, sshTimeoutSeconds);
 
     const auto cleanupSession = [&]() {
@@ -925,7 +966,7 @@ bool fetchCiscoWlanSummary(QWidget* parent, const QString& ip, const QString& us
     }
 
     ssh_channel channel = nullptr;
-    const long sshTimeoutSeconds = 120;
+    const long sshTimeoutSeconds = kCiscoSessionConnectTimeoutSeconds;
     applySshOptions(session, ip, user, true, sshTimeoutSeconds);
 
     const auto cleanup = [&]() {
@@ -1161,7 +1202,7 @@ QString buildAppStyleSheet(bool darkMode) {
             background-color: #1F6DB2;
             border: 2px solid #62C8FF;
         }
-        QPushButton#btn_wizard, QPushButton#btn_generate, QPushButton#btn_generate_cisco, QPushButton#btn_test_ssh, QPushButton#btn_open_mremote, QPushButton#btn_deploy, QPushButton#btn_update_app, QPushButton#btn_testing_update_app {
+        QPushButton#btn_wizard, QPushButton#btn_generate, QPushButton#btn_generate_cisco, QPushButton#btn_test_ssh, QPushButton#btn_open_mremote, QPushButton#btn_deploy, QPushButton#btn_update_app {
             background-color: #1F6DB2;
             color: #FFFFFF;
             font-weight: 800;
@@ -1169,11 +1210,11 @@ QString buildAppStyleSheet(bool darkMode) {
             border-radius: 12px;
             padding: 10px 16px;
         }
-        QPushButton#btn_wizard:hover, QPushButton#btn_generate:hover, QPushButton#btn_generate_cisco:hover, QPushButton#btn_test_ssh:hover, QPushButton#btn_open_mremote:hover, QPushButton#btn_deploy:hover, QPushButton#btn_update_app:hover, QPushButton#btn_testing_update_app:hover {
+        QPushButton#btn_wizard:hover, QPushButton#btn_generate:hover, QPushButton#btn_generate_cisco:hover, QPushButton#btn_test_ssh:hover, QPushButton#btn_open_mremote:hover, QPushButton#btn_deploy:hover, QPushButton#btn_update_app:hover {
             background-color: #2A84D5;
             border: 1px solid #71D0FF;
         }
-        QPushButton#btn_deploy:disabled, QPushButton#btn_test_ssh:disabled, QPushButton#btn_open_mremote:disabled, QPushButton#btn_update_app:disabled, QPushButton#btn_testing_update_app:disabled {
+        QPushButton#btn_deploy:disabled, QPushButton#btn_test_ssh:disabled, QPushButton#btn_open_mremote:disabled, QPushButton#btn_update_app:disabled {
             background-color: #22364E;
             color: #5D7895;
             border: 1px solid #2A415C;
@@ -1366,7 +1407,7 @@ QString buildAppStyleSheet(bool darkMode) {
             background-color: #0F6CBD;
             border: 2px solid #0F6CBD;
         }
-        QPushButton#btn_wizard, QPushButton#btn_generate, QPushButton#btn_generate_cisco, QPushButton#btn_test_ssh, QPushButton#btn_open_mremote, QPushButton#btn_deploy, QPushButton#btn_update_app, QPushButton#btn_testing_update_app {
+        QPushButton#btn_wizard, QPushButton#btn_generate, QPushButton#btn_generate_cisco, QPushButton#btn_test_ssh, QPushButton#btn_open_mremote, QPushButton#btn_deploy, QPushButton#btn_update_app {
             background-color: #1673C5;
             color: #FFFFFF;
             font-weight: 800;
@@ -1374,11 +1415,11 @@ QString buildAppStyleSheet(bool darkMode) {
             border-radius: 12px;
             padding: 10px 16px;
         }
-        QPushButton#btn_wizard:hover, QPushButton#btn_generate:hover, QPushButton#btn_generate_cisco:hover, QPushButton#btn_test_ssh:hover, QPushButton#btn_open_mremote:hover, QPushButton#btn_deploy:hover, QPushButton#btn_update_app:hover, QPushButton#btn_testing_update_app:hover {
+        QPushButton#btn_wizard:hover, QPushButton#btn_generate:hover, QPushButton#btn_generate_cisco:hover, QPushButton#btn_test_ssh:hover, QPushButton#btn_open_mremote:hover, QPushButton#btn_deploy:hover, QPushButton#btn_update_app:hover {
             background-color: #0F64AE;
             border: 1px solid #2D85D3;
         }
-        QPushButton#btn_deploy:disabled, QPushButton#btn_test_ssh:disabled, QPushButton#btn_open_mremote:disabled, QPushButton#btn_update_app:disabled, QPushButton#btn_testing_update_app:disabled {
+        QPushButton#btn_deploy:disabled, QPushButton#btn_test_ssh:disabled, QPushButton#btn_open_mremote:disabled, QPushButton#btn_update_app:disabled {
             background-color: #DFE6EF;
             color: #7C8AA0;
             border: 1px solid #D1DAE5;
@@ -1677,7 +1718,9 @@ void ControllerSessionManager::connectPersistent(QString ip, QString user, QStri
         return;
     }
 
-    const long sshTimeoutSeconds = 60;
+    const long sshTimeoutSeconds = isCiscoMode
+        ? kCiscoSessionConnectTimeoutSeconds
+        : kArubaSessionConnectTimeoutSeconds;
     applySshOptions(session, ip, user, isCiscoMode, sshTimeoutSeconds);
 
     if (ssh_connect(session) != SSH_OK) {
@@ -2791,18 +2834,12 @@ ACS_Wynn_Builder::ACS_Wynn_Builder(QWidget* parent)
     toolbarControlsLayout->addStretch(1);
     btnUpdateApp = new QPushButton("UPDATE APP", toolbarCard);
     btnUpdateApp->setObjectName("btn_update_app");
-    btnUpdateApp->setToolTip("Check GitHub for the latest published release and install it into this folder.");
+    btnUpdateApp->setToolTip("Choose from the most recent GitHub releases and install one into this folder.");
     toolbarControlsLayout->addWidget(btnUpdateApp, 0, Qt::AlignRight);
-    btnTestingUpdateApp = new QPushButton("TEST BUILD", toolbarCard);
-    btnTestingUpdateApp->setObjectName("btn_testing_update_app");
-    btnTestingUpdateApp->setToolTip("Check GitHub for the latest testing build and install it into this folder.");
-    toolbarControlsLayout->addWidget(btnTestingUpdateApp, 0, Qt::AlignRight);
 
     toolbarCardLayout->addWidget(toolbarControlsRow);
     ui->mainLayout->insertWidget(ui->mainLayout->indexOf(ui->card1), toolbarCard);
     connect(btnUpdateApp, &QPushButton::clicked, this, &ACS_Wynn_Builder::on_btn_update_app_clicked);
-    connect(btnTestingUpdateApp, &QPushButton::clicked, this, &ACS_Wynn_Builder::on_btn_testing_update_clicked);
-    btnTestingUpdateApp->setVisible(testingUpdateConfig.enabled);
 
     apGroupSelectorFrame = new QFrame(this);
     apGroupSelectorFrame->setObjectName("apGroupSelectorFrame");
@@ -3660,10 +3697,6 @@ void ACS_Wynn_Builder::on_profilePreset_currentIndexChanged(int) {
 
 void ACS_Wynn_Builder::on_btn_update_app_clicked() {
     checkForUpdates(true, false);
-}
-
-void ACS_Wynn_Builder::on_btn_testing_update_clicked() {
-    checkForUpdates(true, true);
 }
 
 void ACS_Wynn_Builder::on_btn_select_ap_groups_clicked() {
@@ -4861,6 +4894,9 @@ QList<UpdateReleaseOption> ACS_Wynn_Builder::buildReleaseOptions(const QByteArra
         return QString::compare(left.publishedLabel, right.publishedLabel, Qt::CaseInsensitive) > 0;
         });
 
+    if (releases.size() > 10)
+        releases = releases.mid(0, 10);
+
     return releases;
 }
 
@@ -4875,7 +4911,7 @@ bool ACS_Wynn_Builder::promptForReleaseSelection(const QList<UpdateReleaseOption
 
     QVBoxLayout* layout = new QVBoxLayout(&dialog);
     QLabel* summaryLabel = new QLabel(
-        QString("Installed version: %1\nChoose a build to install. Latest stable and testing builds are labeled for clarity.")
+        QString("Installed version: %1\nChoose a build to install. Showing the 10 most recent GitHub releases, with latest stable and testing clearly labeled.")
             .arg(installedVersion),
         &dialog);
     summaryLabel->setWordWrap(true);
@@ -5158,7 +5194,7 @@ void ACS_Wynn_Builder::cleanupUpdateArtifacts() {
 
 void ACS_Wynn_Builder::checkForUpdates(bool interactive, bool testingChannel) {
     UpdateSecurityConfig& selectedConfig = testingChannel ? testingUpdateConfig : updateConfig;
-    QPushButton* selectedButton = testingChannel ? btnTestingUpdateApp : btnUpdateApp;
+    QPushButton* selectedButton = btnUpdateApp;
     const QString channelLabel = testingChannel ? "testing build" : "latest release";
     const bool showReleaseChooser = interactive;
     const QUrl metadataUrl = showReleaseChooser ? githubReleasesMetadataUrl() : selectedConfig.metadataUrl;
@@ -5210,7 +5246,7 @@ void ACS_Wynn_Builder::onVersionCheckComplete(QNetworkReply* reply) {
     const bool interactive = reply->request().attribute(QNetworkRequest::UserMax).toBool();
     const bool showReleaseChooser = reply->request().attribute(static_cast<QNetworkRequest::Attribute>(QNetworkRequest::User + 1)).toBool();
     UpdateSecurityConfig& selectedConfig = testingChannel ? testingUpdateConfig : updateConfig;
-    QPushButton* selectedButton = testingChannel ? btnTestingUpdateApp : btnUpdateApp;
+    QPushButton* selectedButton = btnUpdateApp;
 
     if (selectedButton)
         selectedButton->setEnabled(true);
@@ -5299,7 +5335,7 @@ void ACS_Wynn_Builder::onVersionCheckComplete(QNetworkReply* reply) {
         resolvedUpdateIsTesting = testingChannel;
 
         if (selectedButton)
-            selectedButton->setText((testingChannel ? "TEST " : "UPDATE ") + latestVersion);
+            selectedButton->setText("UPDATE " + latestVersion);
 
         if (interactive) {
             const QMessageBox::StandardButton response = QMessageBox::question(
@@ -5313,25 +5349,23 @@ void ACS_Wynn_Builder::onVersionCheckComplete(QNetworkReply* reply) {
                 startUpdateDownload(resolvedUpdatePackageUrl);
             else
                 this->statusBar()->showMessage("Update is available whenever you're ready.", 4000);
-        } else {
-            this->statusBar()->showMessage(
-                testingChannel
-                    ? "A newer testing build is available. Click TEST BUILD to install it."
-                    : "A newer release is available. Click the update button to install it.",
+            } else {
+                this->statusBar()->showMessage(
+                    "A newer build is available. Click UPDATE APP to choose and install it.",
                 5000);
-        }
+            }
 
         reply->deleteLater();
         return;
     }
 
     if (selectedButton)
-        selectedButton->setText(testingChannel ? "TEST BUILD" : "CHECK UPDATES");
+        selectedButton->setText("UPDATE APP");
     if (interactive) {
         QMessageBox::information(this,
             "Up To Date",
-            QString("This build is already current for the %1 channel.\n\nInstalled version: %2")
-                .arg(testingChannel ? "testing" : "stable", installedVersion));
+            QString("This build is already current compared with the 10 most recent releases.\n\nInstalled version: %1")
+                .arg(installedVersion));
     }
 
     reply->deleteLater();
