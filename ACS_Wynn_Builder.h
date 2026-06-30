@@ -39,7 +39,6 @@
 #include <QCryptographicHash>
 #include <QTextStream>
 #include <QStandardPaths>
-#include <QEventLoop>
 #include <QTimer>
 #include <QScrollArea>
 
@@ -455,7 +454,7 @@ private:
     QNetworkAccessManager* downloadManager;
 
     QPushButton* btnUpdateApp = nullptr;
-    const QString CURRENT_VERSION = "2.3.16";
+    const QString CURRENT_VERSION = "2.3.17";
     void checkForUpdates(bool interactive = false, bool testingChannel = false);
     QString installedVersionLabel() const;
 
@@ -497,11 +496,6 @@ private:
     QUrl githubReleasesMetadataUrl() const;
     QList<UpdateReleaseOption> buildReleaseOptions(const QByteArray& metadataBytes) const;
     bool promptForReleaseSelection(const QList<UpdateReleaseOption>& releases, const QString& installedVersion, bool preferTestingChannel);
-    bool fetchGithubReleaseMetadataForVersion(const UpdateSecurityConfig& config,
-        const QString& version,
-        QUrl* packageUrl,
-        QString* expectedSha256,
-        QStringList* allowedHosts) const;
     int compareVersionStrings(const QString& left, const QString& right) const;
     void refreshWorkspaceSummary();
     void syncModeUi();

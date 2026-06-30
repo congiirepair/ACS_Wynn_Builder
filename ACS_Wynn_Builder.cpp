@@ -33,6 +33,7 @@ constexpr int kCiscoReadPollMs = 100;
 constexpr int kUpdateChannelStable = 0;
 constexpr int kUpdateChannelTesting = 1;
 constexpr int kControllerTcpProbeTimeoutMs = 2500;
+constexpr qint64 kTrustedControllerPreflightCacheMs = 30000;
 constexpr long kCiscoTrustCheckTimeoutSeconds = 8;
 constexpr long kCiscoSessionConnectTimeoutSeconds = 20;
 constexpr long kArubaTrustCheckTimeoutSeconds = 10;
@@ -63,6 +64,48 @@ QString versionPrerelease(const QString& version)
 {
     const QString normalized = normalizeVersionLabel(version);
     return normalized.contains('-') ? normalized.section('-', 1) : QString();
+}
+
+struct ControllerPreflightCacheEntry
+{
+    QString ip;
+    QString user;
+    bool isCiscoMode = false;
+    qint64 verifiedAtMs = 0;
+};
+
+ControllerPreflightCacheEntry g_controllerPreflightCache;
+
+QString normalizedControllerIdentity(QString value)
+{
+    return value.trimmed().toLower();
+}
+
+bool hasFreshTrustedControllerPreflight(const QString& ip, const QString& user, const DeploymentOptions& deployOptions)
+{
+    if (g_controllerPreflightCache.verifiedAtMs <= 0)
+        return false;
+
+    const qint64 ageMs = QDateTime::currentMSecsSinceEpoch() - g_controllerPreflightCache.verifiedAtMs;
+    if (ageMs < 0 || ageMs > kTrustedControllerPreflightCacheMs)
+        return false;
+
+    return g_controllerPreflightCache.isCiscoMode == deployOptions.useCiscoShellLogin
+        && normalizedControllerIdentity(g_controllerPreflightCache.ip) == normalizedControllerIdentity(ip)
+        && normalizedControllerIdentity(g_controllerPreflightCache.user) == normalizedControllerIdentity(user);
+}
+
+void rememberTrustedControllerPreflight(const QString& ip, const QString& user, const DeploymentOptions& deployOptions)
+{
+    g_controllerPreflightCache.ip = ip.trimmed();
+    g_controllerPreflightCache.user = user.trimmed();
+    g_controllerPreflightCache.isCiscoMode = deployOptions.useCiscoShellLogin;
+    g_controllerPreflightCache.verifiedAtMs = QDateTime::currentMSecsSinceEpoch();
+}
+
+void clearTrustedControllerPreflightCache()
+{
+    g_controllerPreflightCache = ControllerPreflightCacheEntry();
 }
 
 bool selectGithubReleaseObject(const QJsonDocument& document, bool preferPrerelease, QJsonObject* selectedRelease)
@@ -956,11 +999,17 @@ bool ensureTrustedHost(QWidget* parent, const QString& ip, const QString& user,
     if (errorMessage)
         errorMessage->clear();
 
-    const HostTrustProbeResult trustResult = inspectTrustedHost(ip, user, deployOptions);
-    if (trustResult.trusted)
+    if (hasFreshTrustedControllerPreflight(ip, user, deployOptions))
         return true;
 
+    const HostTrustProbeResult trustResult = inspectTrustedHost(ip, user, deployOptions);
+    if (trustResult.trusted) {
+        rememberTrustedControllerPreflight(ip, user, deployOptions);
+        return true;
+    }
+
     if (!trustResult.needsApproval) {
+        clearTrustedControllerPreflightCache();
         if (errorMessage)
             *errorMessage = trustResult.errorMessage;
         return false;
@@ -979,12 +1028,18 @@ bool ensureTrustedHost(QWidget* parent, const QString& ip, const QString& user,
 
     const bool accepted = (trustPrompt.clickedButton() == trustButton);
     if (!accepted) {
+        clearTrustedControllerPreflightCache();
         if (errorMessage)
             *errorMessage = "Host trust was cancelled.";
         return false;
     }
 
-    return saveTrustedHost(ip, user, deployOptions, errorMessage);
+    const bool saved = saveTrustedHost(ip, user, deployOptions, errorMessage);
+    if (saved)
+        rememberTrustedControllerPreflight(ip, user, deployOptions);
+    else
+        clearTrustedControllerPreflightCache();
+    return saved;
 }
 
 bool fetchCiscoWlanSummaryTrusted(const QString& ip, const QString& user, const QString& pass,
@@ -2427,18 +2482,42 @@ WizardPageTarget::WizardPageTarget(ApGroupData data, QString explicitIp, QString
             deployOptions.useCiscoShellLogin = true;
             deployOptions.testOnly = true;
 
+            auto startSummaryLookup = [this, ip, user, pass]() {
+                auto summaryText = std::make_shared<QString>();
+                auto summaryError = std::make_shared<QString>();
+                QThread* summaryThread = QThread::create([summaryText, summaryError, ip, user, pass]() {
+                    fetchCiscoWlanSummaryTrusted(ip, user, pass, summaryText.get(), summaryError.get());
+                });
+                connect(summaryThread, &QThread::finished, summaryThread, &QObject::deleteLater);
+                connect(summaryThread, &QThread::finished, this, [this, summaryText, summaryError]() {
+                    if (!summaryError->isEmpty())
+                        wlanSummaryOutput->setPlainText(">>> ERROR: " + *summaryError);
+                    else
+                        wlanSummaryOutput->setPlainText(*summaryText);
+                    btnCheckWlanIds->setEnabled(true);
+                });
+                summaryThread->start();
+            };
+
+            if (hasFreshTrustedControllerPreflight(ip, user, deployOptions)) {
+                wlanSummaryOutput->setPlainText("Reusing recent controller preflight...\nChecking Cisco WLAN IDs...");
+                startSummaryLookup();
+                return;
+            }
+
             auto trustResult = std::make_shared<HostTrustProbeResult>();
             QThread* trustThread = QThread::create([trustResult, ip, user, deployOptions]() {
                 *trustResult = inspectTrustedHost(ip, user, deployOptions);
             });
             connect(trustThread, &QThread::finished, trustThread, &QObject::deleteLater);
-            connect(trustThread, &QThread::finished, this, [this, trustResult, ip, user, pass, deployOptions]() {
+            connect(trustThread, &QThread::finished, this, [this, trustResult, ip, user, deployOptions, startSummaryLookup]() {
                 auto finishSummary = [this](const QString& text) {
                     wlanSummaryOutput->setPlainText(text);
                     btnCheckWlanIds->setEnabled(true);
                 };
 
                 if (!trustResult->errorMessage.isEmpty()) {
+                    clearTrustedControllerPreflightCache();
                     finishSummary(">>> ERROR: " + trustResult->errorMessage);
                     return;
                 }
@@ -2456,31 +2535,21 @@ WizardPageTarget::WizardPageTarget(ApGroupData data, QString explicitIp, QString
                     trustPrompt.exec();
 
                     if (trustPrompt.clickedButton() != trustButton) {
+                        clearTrustedControllerPreflightCache();
                         finishSummary(">>> ERROR: Host trust was cancelled.");
                         return;
                     }
 
                     QString trustError;
                     if (!saveTrustedHost(ip, user, deployOptions, &trustError)) {
+                        clearTrustedControllerPreflightCache();
                         finishSummary(">>> ERROR: " + trustError);
                         return;
                     }
                 }
 
-                auto summaryText = std::make_shared<QString>();
-                auto summaryError = std::make_shared<QString>();
-                QThread* summaryThread = QThread::create([summaryText, summaryError, ip, user, pass]() {
-                    fetchCiscoWlanSummaryTrusted(ip, user, pass, summaryText.get(), summaryError.get());
-                });
-                connect(summaryThread, &QThread::finished, summaryThread, &QObject::deleteLater);
-                connect(summaryThread, &QThread::finished, this, [this, summaryText, summaryError]() {
-                    if (!summaryError->isEmpty())
-                        wlanSummaryOutput->setPlainText(">>> ERROR: " + *summaryError);
-                    else
-                        wlanSummaryOutput->setPlainText(*summaryText);
-                    btnCheckWlanIds->setEnabled(true);
-                });
-                summaryThread->start();
+                rememberTrustedControllerPreflight(ip, user, deployOptions);
+                startSummaryLookup();
             });
             trustThread->start();
         });
@@ -2639,6 +2708,12 @@ void WizardPage6::initializePage() {
     };
 
     auto runAsyncTrustPreflight = [this, ip, user, pass, script, finishWithError, startWorkerDeploy](std::function<void()> onTrusted) {
+        if (hasFreshTrustedControllerPreflight(ip, user, deployOptions)) {
+            sshLogOutput->appendPlainText(">>> Reusing recent controller preflight result.");
+            onTrusted();
+            return;
+        }
+
         sshLogOutput->appendPlainText(">>> Verifying controller reachability and host trust...");
 
         auto trustResult = std::make_shared<HostTrustProbeResult>();
@@ -2649,6 +2724,7 @@ void WizardPage6::initializePage() {
         connect(trustThread, &QThread::finished, this,
             [this, trustResult, ip, user, finishWithError, onTrusted, options = deployOptions]() {
                 if (!trustResult->errorMessage.isEmpty()) {
+                    clearTrustedControllerPreflightCache();
                     finishWithError(trustResult->errorMessage);
                     return;
                 }
@@ -2666,17 +2742,20 @@ void WizardPage6::initializePage() {
                     trustPrompt.exec();
 
                     if (trustPrompt.clickedButton() != trustButton) {
+                        clearTrustedControllerPreflightCache();
                         finishWithError("Host trust was cancelled.");
                         return;
                     }
 
                     QString trustError;
                     if (!saveTrustedHost(ip, user, options, &trustError)) {
+                        clearTrustedControllerPreflightCache();
                         finishWithError(trustError);
                         return;
                     }
                 }
 
+                rememberTrustedControllerPreflight(ip, user, options);
                 onTrusted();
             });
         trustThread->start();
@@ -3291,6 +3370,13 @@ ACS_Wynn_Builder::ACS_Wynn_Builder(QWidget* parent)
             ciscoSessionIsCiscoMode = isCiscoMode;
             ciscoSessionIp = connected ? ip : QString();
             ciscoSessionUser = connected ? user : QString();
+            if (connected) {
+                DeploymentOptions activeSessionOptions;
+                activeSessionOptions.useCiscoShellLogin = isCiscoMode;
+                rememberTrustedControllerPreflight(ip, user, activeSessionOptions);
+            } else {
+                clearTrustedControllerPreflightCache();
+            }
             if (sshSessionStatus) {
                 sshSessionStatus->setText(connected
                     ? ((isCiscoMode ? "Cisco" : "Aruba") + QString(" controller session is connected."))
@@ -3951,6 +4037,26 @@ void ACS_Wynn_Builder::on_btn_deploy_clicked() {
         return;
     }
 
+    if (hasFreshTrustedControllerPreflight(ip, user, deployOptions)) {
+        ui->text_output->appendPlainText(">>> Reusing recent controller preflight result.");
+        pendingPersistentDeploy = true;
+        pendingPersistentDeployIsCiscoMode = isCiscoMode;
+        pendingPersistentDeployScript = script;
+        appendOutputText(isCiscoMode
+            ? ">>> Connecting persistent Cisco session for deployment..."
+            : ">>> Connecting persistent Aruba session for deployment...",
+            "Deployment Console");
+        this->statusBar()->showMessage(
+            isCiscoMode ? "Connecting Cisco session for deployment..." : "Connecting Aruba session for deployment...",
+            10000);
+        QMetaObject::invokeMethod(persistentSessionManager, "connectPersistent", Qt::QueuedConnection,
+            Q_ARG(QString, ip),
+            Q_ARG(QString, user),
+            Q_ARG(QString, pass),
+            Q_ARG(bool, isCiscoMode));
+        return;
+    }
+
     ui->text_output->appendPlainText(">>> Verifying controller reachability and host trust...");
     this->statusBar()->showMessage("Checking controller reachability and host trust...", 10000);
 
@@ -3974,6 +4080,7 @@ void ACS_Wynn_Builder::on_btn_deploy_clicked() {
             };
 
             if (!trustResult->errorMessage.isEmpty()) {
+                clearTrustedControllerPreflightCache();
                 appendOutputText(">>> ERROR: " + trustResult->errorMessage, "Deployment Console");
                 restoreDeployUi();
                 return;
@@ -3992,6 +4099,7 @@ void ACS_Wynn_Builder::on_btn_deploy_clicked() {
                 trustPrompt.exec();
 
                 if (trustPrompt.clickedButton() != trustButton) {
+                    clearTrustedControllerPreflightCache();
                     appendOutputText(">>> ERROR: Host trust was cancelled.", "Deployment Console");
                     restoreDeployUi();
                     return;
@@ -3999,12 +4107,14 @@ void ACS_Wynn_Builder::on_btn_deploy_clicked() {
 
                 QString saveTrustError;
                 if (!saveTrustedHost(ip, user, deployOptions, &saveTrustError)) {
+                    clearTrustedControllerPreflightCache();
                     appendOutputText(">>> ERROR: " + saveTrustError, "Deployment Console");
                     restoreDeployUi();
                     return;
                 }
             }
 
+            rememberTrustedControllerPreflight(ip, user, deployOptions);
             pendingPersistentDeploy = true;
             pendingPersistentDeployIsCiscoMode = isCiscoMode;
             pendingPersistentDeployScript = script;
@@ -4084,6 +4194,17 @@ void ACS_Wynn_Builder::on_btn_test_ssh_clicked() {
         return;
     }
 
+    if (hasFreshTrustedControllerPreflight(ip, user, deployOptions)) {
+        ui->text_output->appendPlainText(">>> Reusing recent controller preflight result.");
+        ui->text_output->appendPlainText(">>> Controller preflight passed. Opening persistent session...");
+        QMetaObject::invokeMethod(persistentSessionManager, "connectPersistent", Qt::QueuedConnection,
+            Q_ARG(QString, ip),
+            Q_ARG(QString, user),
+            Q_ARG(QString, pass),
+            Q_ARG(bool, isCiscoMode));
+        return;
+    }
+
     ui->text_output->appendPlainText(">>> Verifying controller reachability and host trust...");
     this->statusBar()->showMessage("Checking controller reachability and host trust...", 10000);
 
@@ -4107,6 +4228,7 @@ void ACS_Wynn_Builder::on_btn_test_ssh_clicked() {
             };
 
             if (!trustResult->errorMessage.isEmpty()) {
+                clearTrustedControllerPreflightCache();
                 appendOutputText(">>> ERROR: " + trustResult->errorMessage, "Deployment Console");
                 restoreConnectUi();
                 return;
@@ -4125,6 +4247,7 @@ void ACS_Wynn_Builder::on_btn_test_ssh_clicked() {
                 trustPrompt.exec();
 
                 if (trustPrompt.clickedButton() != trustButton) {
+                    clearTrustedControllerPreflightCache();
                     appendOutputText(">>> ERROR: Host trust was cancelled.", "Deployment Console");
                     restoreConnectUi();
                     return;
@@ -4132,12 +4255,14 @@ void ACS_Wynn_Builder::on_btn_test_ssh_clicked() {
 
                 QString trustError;
                 if (!saveTrustedHost(ip, user, deployOptions, &trustError)) {
+                    clearTrustedControllerPreflightCache();
                     appendOutputText(">>> ERROR: " + trustError, "Deployment Console");
                     restoreConnectUi();
                     return;
                 }
             }
 
+            rememberTrustedControllerPreflight(ip, user, deployOptions);
             ui->text_output->appendPlainText(">>> Controller preflight passed. Opening persistent session...");
             QMetaObject::invokeMethod(persistentSessionManager, "connectPersistent", Qt::QueuedConnection,
                 Q_ARG(QString, ip),
@@ -4907,22 +5032,6 @@ bool ACS_Wynn_Builder::resolveUpdateMetadata(const UpdateSecurityConfig& config,
     const QJsonDocument document = QJsonDocument::fromJson(metadataBytes, &parseError);
     if (parseError.error != QJsonParseError::NoError) {
         *latestVersion = normalizeVersionLabel(*latestVersion);
-
-        if (!latestVersion->isEmpty()) {
-            static const QRegularExpression githubDownloadPattern(
-                "^/([^/]+)/([^/]+)/releases/download/([^/]+)/([^/]+)$");
-            const QRegularExpressionMatch match = githubDownloadPattern.match(packageUrl->path());
-            if (match.hasMatch()) {
-                const QString configuredTag = match.captured(3).trimmed();
-                if (!configuredTag.isEmpty() && configuredTag != *latestVersion) {
-                    if (!fetchGithubReleaseMetadataForVersion(config, *latestVersion, packageUrl, expectedSha256, allowedHosts)) {
-                        *packageUrl = QUrl();
-                        expectedSha256->clear();
-                    }
-                }
-            }
-        }
-
         return !latestVersion->isEmpty();
     }
 
@@ -5217,109 +5326,6 @@ bool ACS_Wynn_Builder::promptForReleaseSelection(const QList<UpdateReleaseOption
 
     startUpdateDownload(resolvedUpdatePackageUrl);
     return true;
-}
-
-bool ACS_Wynn_Builder::fetchGithubReleaseMetadataForVersion(const UpdateSecurityConfig& config,
-    const QString& version,
-    QUrl* packageUrl,
-    QString* expectedSha256,
-    QStringList* allowedHosts) const {
-    if (!packageUrl || !expectedSha256 || !allowedHosts || version.trimmed().isEmpty())
-        return false;
-
-    static const QRegularExpression githubDownloadPattern(
-        "^/([^/]+)/([^/]+)/releases/download/([^/]+)/([^/]+)$");
-    const QRegularExpressionMatch match = githubDownloadPattern.match(config.packageUrl.path());
-    if (!match.hasMatch())
-        return false;
-
-    const QString owner = match.captured(1).trimmed();
-    const QString repo = match.captured(2).trimmed();
-    const QString assetName = match.captured(4).trimmed();
-    if (owner.isEmpty() || repo.isEmpty() || assetName.isEmpty())
-        return false;
-
-    auto fetchReleaseByTag = [&](const QString& tag) -> bool {
-        const QUrl apiUrl(QString("https://api.github.com/repos/%1/%2/releases/tags/%3")
-            .arg(owner, repo, tag));
-
-        QNetworkAccessManager manager;
-        QNetworkRequest request(apiUrl);
-        request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
-        request.setHeader(QNetworkRequest::UserAgentHeader, "ACS Tool Updater");
-
-        QEventLoop loop;
-        QTimer timeoutTimer;
-        timeoutTimer.setSingleShot(true);
-
-        QNetworkReply* reply = manager.get(request);
-        QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
-        QObject::connect(&timeoutTimer, &QTimer::timeout, &loop, &QEventLoop::quit);
-        timeoutTimer.start(10000);
-        loop.exec();
-
-        if (timeoutTimer.isActive())
-            timeoutTimer.stop();
-        else
-            reply->abort();
-
-        if (reply->error() != QNetworkReply::NoError) {
-            reply->deleteLater();
-            return false;
-        }
-
-        QJsonParseError parseError;
-        const QJsonDocument document = QJsonDocument::fromJson(reply->readAll(), &parseError);
-        reply->deleteLater();
-        QJsonObject obj;
-        if (parseError.error != QJsonParseError::NoError || !selectGithubReleaseObject(document, config.preferPrerelease, &obj))
-            return false;
-        const QJsonArray assets = obj.value("assets").toArray();
-        for (const QJsonValue& assetValue : assets) {
-            const QJsonObject asset = assetValue.toObject();
-            const QString candidateName = asset.value("name").toString().trimmed();
-            const QString downloadUrl = asset.value("browser_download_url").toString().trimmed();
-            QString digest = asset.value("digest").toString().trimmed();
-            if (downloadUrl.isEmpty())
-                continue;
-
-            if (digest.startsWith("sha256:", Qt::CaseInsensitive))
-                digest = digest.mid(QString("sha256:").size());
-            digest.remove(QRegularExpression("\\s+"));
-
-            const bool exactAssetMatch = QString::compare(candidateName, assetName, Qt::CaseInsensitive) == 0;
-            const bool usableFallbackAsset = candidateName.endsWith(".zip", Qt::CaseInsensitive)
-                || candidateName.endsWith(".exe", Qt::CaseInsensitive)
-                || assets.size() == 1;
-            if (!exactAssetMatch && !usableFallbackAsset)
-                continue;
-
-            *packageUrl = QUrl(downloadUrl);
-            // Never carry forward an older release checksum onto a newer asset.
-            if (digest.size() == 64)
-                *expectedSha256 = digest.toLower();
-            else
-                expectedSha256->clear();
-
-            allowedHosts->append("api.github.com");
-            allowedHosts->append("github.com");
-            allowedHosts->append("githubusercontent.com");
-            allowedHosts->append("objects.githubusercontent.com");
-            allowedHosts->append("release-assets.githubusercontent.com");
-            allowedHosts->removeDuplicates();
-            return true;
-        }
-
-        return false;
-        };
-
-    if (fetchReleaseByTag(version))
-        return true;
-
-    if (!version.startsWith('v', Qt::CaseInsensitive) && fetchReleaseByTag("v" + version))
-        return true;
-
-    return false;
 }
 
 int ACS_Wynn_Builder::compareVersionStrings(const QString& left, const QString& right) const {
