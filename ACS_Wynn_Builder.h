@@ -82,6 +82,17 @@ struct UpdateSecurityConfig {
     bool preferPrerelease = false;
 };
 
+struct UpdateReleaseOption {
+    QString version;
+    QUrl packageUrl;
+    QString expectedSha256;
+    QStringList allowedHosts;
+    QString channelLabel;
+    QString publishedLabel;
+    bool isTesting = false;
+    bool isLatestStable = false;
+};
+
 struct DeploymentOptions {
     bool sendInitialEnter = false;
     bool useCiscoShellLogin = false;
@@ -445,7 +456,7 @@ private:
 
     QPushButton* btnUpdateApp = nullptr;
     QPushButton* btnTestingUpdateApp = nullptr;
-    const QString CURRENT_VERSION = "2.3.13";
+    const QString CURRENT_VERSION = "2.3.14";
     void checkForUpdates(bool interactive = false, bool testingChannel = false);
     QString installedVersionLabel() const;
 
@@ -472,12 +483,21 @@ private:
     bool isTrustedUpdateUrl(const UpdateSecurityConfig& config, const QUrl& url, const QStringList& extraAllowedHosts = {}) const;
     void cleanupUpdateArtifacts();
     QString apGroupsConfigPath() const;
+    bool resolveUpdateMetadataFromObject(const UpdateSecurityConfig& config,
+        const QJsonObject& releaseObject,
+        QString* latestVersion,
+        QUrl* packageUrl,
+        QString* expectedSha256,
+        QStringList* allowedHosts) const;
     bool resolveUpdateMetadata(const UpdateSecurityConfig& config,
         const QByteArray& metadataBytes,
         QString* latestVersion,
         QUrl* packageUrl,
         QString* expectedSha256,
         QStringList* allowedHosts) const;
+    QUrl githubReleasesMetadataUrl() const;
+    QList<UpdateReleaseOption> buildReleaseOptions(const QByteArray& metadataBytes) const;
+    bool promptForReleaseSelection(const QList<UpdateReleaseOption>& releases, const QString& installedVersion, bool preferTestingChannel);
     bool fetchGithubReleaseMetadataForVersion(const UpdateSecurityConfig& config,
         const QString& version,
         QUrl* packageUrl,

@@ -155,7 +155,7 @@
     "updater_enabled": true,
     "updater_metadata_url": "https://api.github.com/repos/congiirepair/ACS_Wynn_Builder/releases/latest",
     "updater_package_url": "https://github.com/congiirepair/ACS_Wynn_Builder/releases/latest/download/ACS_Wynn_Builder_Update.zip",
-    "updater_expected_sha256": "f6bc900c1c0fe7f65d41da0e1c4ef52d3142b95cc652fd0c36574647915584de",
+    "updater_expected_sha256": "",
     "updater_allowed_hosts": [
         "api.github.com",
         "gist.githubusercontent.com",

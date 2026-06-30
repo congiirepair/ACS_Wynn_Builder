@@ -4653,6 +4653,18 @@ bool ACS_Wynn_Builder::resolveUpdateMetadata(const UpdateSecurityConfig& config,
     if (!selectGithubReleaseObject(document, config.preferPrerelease, &obj))
         return false;
 
+    return resolveUpdateMetadataFromObject(config, obj, latestVersion, packageUrl, expectedSha256, allowedHosts);
+}
+
+bool ACS_Wynn_Builder::resolveUpdateMetadataFromObject(const UpdateSecurityConfig& config,
+    const QJsonObject& obj,
+    QString* latestVersion,
+    QUrl* packageUrl,
+    QString* expectedSha256,
+    QStringList* allowedHosts) const {
+    if (!latestVersion || !packageUrl || !expectedSha256 || !allowedHosts)
+        return false;
+
     auto pullString = [&](const char* key) {
         return obj.value(QLatin1String(key)).toString().trimmed();
         };
@@ -4745,6 +4757,186 @@ bool ACS_Wynn_Builder::resolveUpdateMetadata(const UpdateSecurityConfig& config,
     allowedHosts->removeDuplicates();
 
     return !latestVersion->isEmpty();
+}
+
+QUrl ACS_Wynn_Builder::githubReleasesMetadataUrl() const {
+    if (testingUpdateConfig.enabled
+        && testingUpdateConfig.metadataUrl.isValid()
+        && isTrustedUpdateUrl(testingUpdateConfig, testingUpdateConfig.metadataUrl)) {
+        return testingUpdateConfig.metadataUrl;
+    }
+
+    auto deriveFromPackageUrl = [&](const UpdateSecurityConfig& config) -> QUrl {
+        static const QRegularExpression githubDownloadPattern("^/([^/]+)/([^/]+)/releases/download/([^/]+)/([^/]+)$");
+        const QRegularExpressionMatch match = githubDownloadPattern.match(config.packageUrl.path());
+        if (!match.hasMatch())
+            return QUrl();
+
+        const QString owner = match.captured(1).trimmed();
+        const QString repo = match.captured(2).trimmed();
+        if (owner.isEmpty() || repo.isEmpty())
+            return QUrl();
+
+        return QUrl(QString("https://api.github.com/repos/%1/%2/releases").arg(owner, repo));
+        };
+
+    const QUrl stableUrl = deriveFromPackageUrl(updateConfig);
+    if (stableUrl.isValid() && isTrustedUpdateUrl(updateConfig, stableUrl))
+        return stableUrl;
+
+    const QUrl testingUrl = deriveFromPackageUrl(testingUpdateConfig);
+    if (testingUrl.isValid() && isTrustedUpdateUrl(testingUpdateConfig, testingUrl))
+        return testingUrl;
+
+    return QUrl();
+}
+
+QList<UpdateReleaseOption> ACS_Wynn_Builder::buildReleaseOptions(const QByteArray& metadataBytes) const {
+    QList<UpdateReleaseOption> releases;
+
+    QJsonParseError parseError;
+    const QJsonDocument document = QJsonDocument::fromJson(metadataBytes, &parseError);
+    if (parseError.error != QJsonParseError::NoError || !document.isArray())
+        return releases;
+
+    const QJsonArray releaseArray = document.array();
+    QString latestStableVersion;
+
+    for (const QJsonValue& releaseValue : releaseArray) {
+        if (!releaseValue.isObject())
+            continue;
+
+        const QJsonObject releaseObject = releaseValue.toObject();
+        if (releaseObject.value("draft").toBool(false))
+            continue;
+
+        const bool isTesting = releaseObject.value("prerelease").toBool(false);
+        const UpdateSecurityConfig& config = isTesting ? testingUpdateConfig : updateConfig;
+        QString version;
+        QUrl packageUrl;
+        QString expectedSha256;
+        QStringList allowedHosts;
+        if (!resolveUpdateMetadataFromObject(config, releaseObject, &version, &packageUrl, &expectedSha256, &allowedHosts))
+            continue;
+        if (version.isEmpty() || !isTrustedUpdateUrl(config, packageUrl, allowedHosts) || expectedSha256.size() != 64)
+            continue;
+
+        if (!isTesting && (latestStableVersion.isEmpty() || compareVersionStrings(version, latestStableVersion) > 0))
+            latestStableVersion = version;
+
+        UpdateReleaseOption option;
+        option.version = version;
+        option.packageUrl = packageUrl;
+        option.expectedSha256 = expectedSha256;
+        option.allowedHosts = allowedHosts;
+        option.isTesting = isTesting;
+        option.channelLabel = isTesting ? "testing" : "stable";
+
+        const QString publishedAt = releaseObject.value("published_at").toString().trimmed();
+        const QDateTime publishedDate = QDateTime::fromString(publishedAt, Qt::ISODate);
+        option.publishedLabel = publishedDate.isValid()
+            ? publishedDate.toLocalTime().date().toString("MMM d, yyyy")
+            : QString();
+
+        releases.append(option);
+    }
+
+    for (UpdateReleaseOption& option : releases) {
+        if (!option.isTesting && option.version == latestStableVersion) {
+            option.isLatestStable = true;
+            option.channelLabel = "latest stable";
+        }
+    }
+
+    std::sort(releases.begin(), releases.end(), [&](const UpdateReleaseOption& left, const UpdateReleaseOption& right) {
+        if (left.isLatestStable != right.isLatestStable)
+            return left.isLatestStable;
+        if (left.isTesting != right.isTesting)
+            return !left.isTesting;
+
+        const int versionCompare = compareVersionStrings(left.version, right.version);
+        if (versionCompare != 0)
+            return versionCompare > 0;
+
+        return QString::compare(left.publishedLabel, right.publishedLabel, Qt::CaseInsensitive) > 0;
+        });
+
+    return releases;
+}
+
+bool ACS_Wynn_Builder::promptForReleaseSelection(const QList<UpdateReleaseOption>& releases, const QString& installedVersion, bool preferTestingChannel) {
+    if (releases.isEmpty())
+        return false;
+
+    QDialog dialog(this);
+    dialog.setWindowTitle("Available Updates");
+    dialog.setModal(true);
+    dialog.resize(720, 430);
+
+    QVBoxLayout* layout = new QVBoxLayout(&dialog);
+    QLabel* summaryLabel = new QLabel(
+        QString("Installed version: %1\nChoose a build to install. Latest stable and testing builds are labeled for clarity.")
+            .arg(installedVersion),
+        &dialog);
+    summaryLabel->setWordWrap(true);
+    layout->addWidget(summaryLabel);
+
+    QTreeWidget* releaseTree = new QTreeWidget(&dialog);
+    releaseTree->setColumnCount(3);
+    releaseTree->setHeaderLabels(QStringList() << "Version" << "Channel" << "Published");
+    releaseTree->setRootIsDecorated(false);
+    releaseTree->setAlternatingRowColors(true);
+    releaseTree->setUniformRowHeights(true);
+
+    int preferredRow = -1;
+    for (int i = 0; i < releases.size(); ++i) {
+        const UpdateReleaseOption& option = releases[i];
+        QTreeWidgetItem* item = new QTreeWidgetItem(releaseTree);
+        item->setText(0, option.version);
+        item->setText(1, option.channelLabel);
+        item->setText(2, option.publishedLabel);
+        item->setData(0, Qt::UserRole, i);
+        if (option.version == installedVersion)
+            item->setText(1, option.channelLabel + " (installed)");
+        if (preferredRow < 0) {
+            const bool preferredMatch = preferTestingChannel ? option.isTesting : option.isLatestStable;
+            if (preferredMatch)
+                preferredRow = i;
+        }
+    }
+
+    releaseTree->resizeColumnToContents(0);
+    releaseTree->resizeColumnToContents(1);
+    if (preferredRow < 0)
+        preferredRow = 0;
+    if (QTreeWidgetItem* initialItem = releaseTree->topLevelItem(preferredRow))
+        releaseTree->setCurrentItem(initialItem);
+    layout->addWidget(releaseTree);
+
+    QDialogButtonBox* buttonBox = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    buttonBox->button(QDialogButtonBox::Ok)->setText("Install Selected");
+    connect(buttonBox, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttonBox, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    connect(releaseTree, &QTreeWidget::itemDoubleClicked, &dialog, [&dialog](QTreeWidgetItem*, int) { dialog.accept(); });
+    layout->addWidget(buttonBox);
+
+    if (dialog.exec() != QDialog::Accepted || !releaseTree->currentItem())
+        return false;
+
+    const int selectedIndex = releaseTree->currentItem()->data(0, Qt::UserRole).toInt();
+    if (selectedIndex < 0 || selectedIndex >= releases.size())
+        return false;
+
+    const UpdateReleaseOption& selected = releases[selectedIndex];
+    resolvedUpdateVersion = selected.version;
+    resolvedUpdatePackageUrl = selected.packageUrl;
+    resolvedUpdateSha256 = selected.expectedSha256;
+    resolvedUpdateAllowedHosts = selected.allowedHosts;
+    resolvedUpdateChannelLabel = selected.channelLabel;
+    resolvedUpdateIsTesting = selected.isTesting;
+
+    startUpdateDownload(resolvedUpdatePackageUrl);
+    return true;
 }
 
 bool ACS_Wynn_Builder::fetchGithubReleaseMetadataForVersion(const UpdateSecurityConfig& config,
@@ -4968,6 +5160,8 @@ void ACS_Wynn_Builder::checkForUpdates(bool interactive, bool testingChannel) {
     UpdateSecurityConfig& selectedConfig = testingChannel ? testingUpdateConfig : updateConfig;
     QPushButton* selectedButton = testingChannel ? btnTestingUpdateApp : btnUpdateApp;
     const QString channelLabel = testingChannel ? "testing build" : "latest release";
+    const bool showReleaseChooser = interactive;
+    const QUrl metadataUrl = showReleaseChooser ? githubReleasesMetadataUrl() : selectedConfig.metadataUrl;
 
     if (selectedButton)
         selectedButton->setEnabled(false);
@@ -4983,28 +5177,30 @@ void ACS_Wynn_Builder::checkForUpdates(bool interactive, bool testingChannel) {
         return;
     }
 
-    if (!isTrustedUpdateUrl(selectedConfig, selectedConfig.metadataUrl)) {
+    if (!metadataUrl.isValid() || !isTrustedUpdateUrl(selectedConfig, metadataUrl)) {
         if (selectedButton)
             selectedButton->setEnabled(true);
         if (interactive) {
             QMessageBox::warning(this,
                 "Updater Configuration Error",
-                QString("The %1 metadata URL is missing, not HTTPS, or not on the trusted host list.").arg(channelLabel));
+                QString("The %1 metadata URL is missing, not HTTPS, or not on the trusted host list.").arg(showReleaseChooser ? "release list" : channelLabel));
         } else {
-            qWarning() << "Updater disabled:" << channelLabel << "metadata URL is missing, non-HTTPS, or not allow-listed.";
+            qWarning() << "Updater disabled:" << (showReleaseChooser ? "release list" : channelLabel) << "metadata URL is missing, non-HTTPS, or not allow-listed.";
         }
         return;
     }
 
     if (interactive)
         this->statusBar()->showMessage(
-            testingChannel ? "Checking GitHub for the latest testing build..." : "Checking GitHub for the latest release...",
+            showReleaseChooser ? "Loading available GitHub builds..." :
+            (testingChannel ? "Checking GitHub for the latest testing build..." : "Checking GitHub for the latest release..."),
             4000);
 
-    QNetworkRequest request(selectedConfig.metadataUrl);
+    QNetworkRequest request(metadataUrl);
     request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
     request.setAttribute(QNetworkRequest::User, testingChannel ? kUpdateChannelTesting : kUpdateChannelStable);
     request.setAttribute(QNetworkRequest::UserMax, interactive);
+    request.setAttribute(static_cast<QNetworkRequest::Attribute>(QNetworkRequest::User + 1), showReleaseChooser);
     request.setHeader(QNetworkRequest::UserAgentHeader, "ACS Tool Updater");
     versionCheckManager->get(request);
 }
@@ -5012,6 +5208,7 @@ void ACS_Wynn_Builder::checkForUpdates(bool interactive, bool testingChannel) {
 void ACS_Wynn_Builder::onVersionCheckComplete(QNetworkReply* reply) {
     const bool testingChannel = reply->request().attribute(QNetworkRequest::User).toInt() == kUpdateChannelTesting;
     const bool interactive = reply->request().attribute(QNetworkRequest::UserMax).toBool();
+    const bool showReleaseChooser = reply->request().attribute(static_cast<QNetworkRequest::Attribute>(QNetworkRequest::User + 1)).toBool();
     UpdateSecurityConfig& selectedConfig = testingChannel ? testingUpdateConfig : updateConfig;
     QPushButton* selectedButton = testingChannel ? btnTestingUpdateApp : btnUpdateApp;
 
@@ -5035,6 +5232,27 @@ void ACS_Wynn_Builder::onVersionCheckComplete(QNetworkReply* reply) {
     QString expectedSha256;
     QStringList allowedHosts;
     const QByteArray metadataBytes = reply->readAll();
+    const QString installedVersion = installedVersionLabel();
+
+    if (showReleaseChooser) {
+        const QList<UpdateReleaseOption> releases = buildReleaseOptions(metadataBytes);
+        if (releases.isEmpty()) {
+            if (interactive) {
+                QMessageBox::warning(this,
+                    "Update Check Failed",
+                    "The GitHub release list could not be parsed into installable builds.");
+            }
+            reply->deleteLater();
+            return;
+        }
+
+        const bool startedInstall = promptForReleaseSelection(releases, installedVersion, testingChannel);
+        if (!startedInstall)
+            this->statusBar()->showMessage("Update selection canceled.", 3000);
+        reply->deleteLater();
+        return;
+    }
+
     if (!resolveUpdateMetadata(selectedConfig, metadataBytes, &latestVersion, &packageUrl, &expectedSha256, &allowedHosts)) {
         if (interactive) {
             QMessageBox::warning(this,
@@ -5045,7 +5263,6 @@ void ACS_Wynn_Builder::onVersionCheckComplete(QNetworkReply* reply) {
         return;
     }
 
-    const QString installedVersion = installedVersionLabel();
     const int versionCompare = compareVersionStrings(latestVersion, installedVersion);
     const bool testingCoreMatchUpgrade =
         testingChannel
