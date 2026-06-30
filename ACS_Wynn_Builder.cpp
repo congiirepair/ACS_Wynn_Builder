@@ -16,6 +16,7 @@
 #include <QScreen>
 #include <QSplitter>
 #include <algorithm>
+#include <functional>
 
 QString resolveCiscoInterfaceName(const QString& selection);
 QString formatCiscoInterfaceLabel(const QString& interfaceName);
@@ -25,16 +26,303 @@ bool ensureTrustedHost(QWidget* parent, const QString& ip, const QString& user,
 bool fetchCiscoWlanSummary(QWidget* parent, const QString& ip, const QString& user, const QString& pass,
     QString* output, QString* errorMessage = nullptr);
 
+namespace {
+constexpr int kCiscoPromptTimeoutMs = 20000;
+constexpr int kCiscoQuietWindowMs = 1200;
+constexpr int kCiscoReadPollMs = 100;
+constexpr int kUpdateChannelStable = 0;
+constexpr int kUpdateChannelTesting = 1;
+
+QString normalizeVersionLabel(QString version)
+{
+    version = version.trimmed();
+    if (version.startsWith('v', Qt::CaseInsensitive))
+        version.remove(0, 1);
+    return version;
+}
+
+QStringList splitVersionTokenParts(const QString& token)
+{
+    return token.split(QRegularExpression(R"([.-])"), Qt::SkipEmptyParts);
+}
+
+QString versionCore(const QString& version)
+{
+    return normalizeVersionLabel(version).section('-', 0, 0);
+}
+
+QString versionPrerelease(const QString& version)
+{
+    const QString normalized = normalizeVersionLabel(version);
+    return normalized.contains('-') ? normalized.section('-', 1) : QString();
+}
+
+bool selectGithubReleaseObject(const QJsonDocument& document, bool preferPrerelease, QJsonObject* selectedRelease)
+{
+    if (!selectedRelease)
+        return false;
+
+    if (document.isObject()) {
+        *selectedRelease = document.object();
+        return true;
+    }
+
+    if (!document.isArray())
+        return false;
+
+    const QJsonArray releases = document.array();
+    for (const QJsonValue& releaseValue : releases) {
+        if (!releaseValue.isObject())
+            continue;
+
+        const QJsonObject release = releaseValue.toObject();
+        if (release.value("draft").toBool(false))
+            continue;
+        if (release.value("prerelease").toBool(false) != preferPrerelease)
+            continue;
+        *selectedRelease = release;
+        return true;
+    }
+
+    return false;
+}
+
+void applySshOptions(ssh_session session, const QString& host, const QString& user, bool isCiscoMode, long timeoutSeconds)
+{
+    const QByteArray hostUtf8 = host.toUtf8();
+    const QByteArray userUtf8 = user.toUtf8();
+    const int sshPort = 22;
+
+    ssh_options_set(session, SSH_OPTIONS_HOST, hostUtf8.constData());
+    if (!userUtf8.isEmpty())
+        ssh_options_set(session, SSH_OPTIONS_USER, userUtf8.constData());
+    ssh_options_set(session, SSH_OPTIONS_PORT, &sshPort);
+    ssh_options_set(session, SSH_OPTIONS_TIMEOUT, &timeoutSeconds);
+
+    if (!isCiscoMode)
+        return;
+
+    const char* preferredHostKeys = "ssh-rsa,rsa-sha2-256,rsa-sha2-512,ecdsa-sha2-nistp256,ssh-ed25519";
+    const char* preferredKex = "diffie-hellman-group14-sha1,diffie-hellman-group14-sha256,diffie-hellman-group1-sha1,diffie-hellman-group-exchange-sha1,diffie-hellman-group-exchange-sha256,ecdh-sha2-nistp256,curve25519-sha256";
+    const char* preferredCiphers = "aes128-ctr,aes192-ctr,aes256-ctr,aes128-cbc,aes256-cbc,3des-cbc";
+    const char* preferredHmacs = "hmac-sha1,hmac-sha2-256,hmac-sha2-512";
+
+    ssh_options_set(session, SSH_OPTIONS_HOSTKEYS, preferredHostKeys);
+    ssh_options_set(session, SSH_OPTIONS_KEY_EXCHANGE, preferredKex);
+    ssh_options_set(session, SSH_OPTIONS_CIPHERS_C_S, preferredCiphers);
+    ssh_options_set(session, SSH_OPTIONS_CIPHERS_S_C, preferredCiphers);
+    ssh_options_set(session, SSH_OPTIONS_HMAC_C_S, preferredHmacs);
+    ssh_options_set(session, SSH_OPTIONS_HMAC_S_C, preferredHmacs);
+}
+
+void closeSshChannel(ssh_channel& channel)
+{
+    if (!channel)
+        return;
+
+    ssh_channel_send_eof(channel);
+    ssh_channel_close(channel);
+    ssh_channel_free(channel);
+    channel = nullptr;
+}
+
+void closeSshSession(ssh_session& session)
+{
+    if (!session)
+        return;
+
+    ssh_disconnect(session);
+    ssh_free(session);
+    session = nullptr;
+}
+
+bool readNonBlockingShell(ssh_channel channel, char* readBuf, int readBufSize, QString* collected, std::function<void(const QString&)> onChunk = {})
+{
+    bool receivedData = false;
+    int n = 0;
+    while ((n = ssh_channel_read_nonblocking(channel, readBuf, readBufSize - 1, 0)) > 0) {
+        readBuf[n] = '\0';
+        const QString chunk = QString::fromLocal8Bit(readBuf, n);
+        if (collected)
+            collected->append(chunk);
+        if (onChunk)
+            onChunk(chunk);
+        receivedData = true;
+    }
+    return receivedData;
+}
+
+bool waitForPrompt(ssh_channel channel,
+    char* readBuf,
+    int readBufSize,
+    const QStringList& prompts,
+    int timeoutMs,
+    QString* transcript,
+    QString* errorMessage,
+    const QString& stageLabel,
+    std::function<void(const QString&)> onChunk = {})
+{
+    QString collected = transcript ? *transcript : QString();
+    QElapsedTimer timer;
+    timer.start();
+
+    while (timer.elapsed() < timeoutMs) {
+        const bool receivedData = readNonBlockingShell(channel, readBuf, readBufSize, &collected, onChunk);
+        const QString lowered = collected.toLower();
+        for (const QString& prompt : prompts) {
+            if (lowered.contains(prompt.toLower())) {
+                if (transcript)
+                    *transcript = collected;
+                return true;
+            }
+        }
+
+        if (!receivedData)
+            QThread::msleep(kCiscoReadPollMs);
+    }
+
+    if (transcript)
+        *transcript = collected;
+    if (errorMessage) {
+        QString snippet = collected.simplified();
+        if (snippet.length() > 220)
+            snippet = snippet.left(220) + "...";
+        if (snippet.isEmpty())
+            snippet = "(no controller output received)";
+        *errorMessage = QString("Timed out during %1. Last output: %2").arg(stageLabel, snippet);
+    }
+    return false;
+}
+
+bool waitForShellQuiet(ssh_channel channel,
+    char* readBuf,
+    int readBufSize,
+    int quietWindowMs,
+    int maxWaitMs,
+    QString* transcript = nullptr,
+    std::function<void(const QString&)> onChunk = {})
+{
+    QElapsedTimer totalTimer;
+    QElapsedTimer quietTimer;
+    totalTimer.start();
+    quietTimer.start();
+
+    while (totalTimer.elapsed() < maxWaitMs) {
+        const bool receivedData = readNonBlockingShell(channel, readBuf, readBufSize, transcript, onChunk);
+        if (receivedData) {
+            quietTimer.restart();
+        } else if (quietTimer.elapsed() >= quietWindowMs) {
+            return true;
+        } else {
+            QThread::msleep(kCiscoReadPollMs);
+        }
+    }
+
+    return false;
+}
+
+int writeShellLine(ssh_channel channel, const QString& line)
+{
+    const QByteArray payload = (line + "\n").toUtf8();
+    return ssh_channel_write(channel, payload.constData(), static_cast<uint32_t>(payload.size()));
+}
+
+bool completeCiscoShellLogin(ssh_channel channel,
+    const QString& user,
+    const QString& pass,
+    char* readBuf,
+    int readBufSize,
+    QString* errorMessage = nullptr,
+    std::function<void(const QString&)> onChunk = {},
+    std::function<void(const QString&)> onLog = {})
+{
+    auto log = [&](const QString& message) {
+        if (onLog)
+            onLog(message);
+    };
+
+    auto waitForCiscoPrompt = [&](const QStringList& prompts, const QString& stageLabel, QString* transcript) {
+        if (waitForPrompt(channel, readBuf, readBufSize, prompts, kCiscoPromptTimeoutMs, transcript, errorMessage, stageLabel, onChunk))
+            return true;
+
+        log(">>> Cisco shell login: no prompt detected, sending another Enter...");
+        writeShellLine(channel, QString());
+        if (waitForPrompt(channel, readBuf, readBufSize, prompts, kCiscoPromptTimeoutMs, transcript, errorMessage, stageLabel + " retry", onChunk))
+            return true;
+
+        log(">>> Cisco shell login: still waiting, sending one final Enter...");
+        writeShellLine(channel, QString());
+        return waitForPrompt(channel, readBuf, readBufSize, prompts, kCiscoPromptTimeoutMs, transcript, errorMessage, stageLabel + " final retry", onChunk);
+    };
+
+    ssh_channel_write(channel, "\n", 1);
+    QThread::msleep(300);
+
+    QString transcript;
+    if (!waitForCiscoPrompt({ "login as:", "please enter the user", "user:", "password:", ">", "#" }, "initial Cisco controller prompt", &transcript))
+        return false;
+
+    QString loweredTranscript = transcript.toLower();
+    if (loweredTranscript.contains("login as:")) {
+        log(">>> Cisco shell login: sending blank login name...");
+        writeShellLine(channel, QString());
+        transcript.clear();
+        if (!waitForCiscoPrompt({ "please enter the user", "user:", "password:", ">", "#" }, "blank login name handoff", &transcript))
+            return false;
+        loweredTranscript = transcript.toLower();
+    }
+
+    if (loweredTranscript.contains("user:")) {
+        log(">>> Cisco shell login: sending username...");
+        writeShellLine(channel, user);
+        transcript.clear();
+        if (!waitForCiscoPrompt({ "password:", "user:", ">", "#" }, "username submission", &transcript))
+            return false;
+        loweredTranscript = transcript.toLower();
+
+        if (loweredTranscript.contains("user:")) {
+            log(">>> Cisco shell login: controller repeated user prompt, sending username again...");
+            writeShellLine(channel, user);
+            transcript.clear();
+            if (!waitForCiscoPrompt({ "password:", ">", "#" }, "username resubmission", &transcript))
+                return false;
+            loweredTranscript = transcript.toLower();
+        }
+    }
+
+    if (loweredTranscript.contains("password:")) {
+        log(">>> Cisco shell login: sending password...");
+        writeShellLine(channel, pass);
+        transcript.clear();
+        if (!waitForPrompt(channel, readBuf, readBufSize, { ">", "#", "save config", "config wlan" }, kCiscoPromptTimeoutMs, &transcript, errorMessage, "password submission", onChunk))
+            return false;
+    }
+
+    return true;
+}
+
+QString stripCiscoPagerTokens(QString chunk)
+{
+    chunk.replace("--More-- or (q)uit", "", Qt::CaseInsensitive);
+    chunk.replace("--More--", "", Qt::CaseInsensitive);
+    chunk.replace("(q)uit", "", Qt::CaseInsensitive);
+    return chunk;
+}
+}
+
 QList<int> extractCiscoUsedWlanIds(const QString& rawSummary) {
     QRegularExpression idRegex(R"((?m)^\s*(\d+)\s+\S)");
     QRegularExpressionMatchIterator matches = idRegex.globalMatch(rawSummary);
     QList<int> usedIds;
+    QSet<int> seenIds;
     while (matches.hasNext()) {
         const QRegularExpressionMatch match = matches.next();
         bool ok = false;
         const int id = match.captured(1).toInt(&ok);
-        if (ok && !usedIds.contains(id))
+        if (ok && !seenIds.contains(id)) {
+            seenIds.insert(id);
             usedIds << id;
+        }
     }
 
     std::sort(usedIds.begin(), usedIds.end());
@@ -42,8 +330,9 @@ QList<int> extractCiscoUsedWlanIds(const QString& rawSummary) {
 }
 
 int findLowestAvailableCiscoWlanId(const QList<int>& usedIds, int minimumExclusive = 60) {
+    const QSet<int> usedIdSet(usedIds.begin(), usedIds.end());
     for (int candidate = minimumExclusive + 1; candidate <= 512; ++candidate) {
-        if (!usedIds.contains(candidate))
+        if (!usedIdSet.contains(candidate))
             return candidate;
     }
 
@@ -96,11 +385,12 @@ QString sanitizeCiscoWlanSummaryTranscript(const QString& rawSummary) {
 QString summarizeCiscoWlanIds(const QString& rawSummary) {
     const QString cleanedSummary = sanitizeCiscoWlanSummaryTranscript(rawSummary);
     const QList<int> usedIds = extractCiscoUsedWlanIds(cleanedSummary);
+    const QSet<int> usedIdSet(usedIds.begin(), usedIds.end());
     const int suggestedId = findLowestAvailableCiscoWlanId(usedIds, 60);
 
     QStringList nextAvailable;
     for (int candidate = 61; candidate <= 512 && nextAvailable.size() < 12; ++candidate) {
-        if (!usedIds.contains(candidate))
+        if (!usedIdSet.contains(candidate))
             nextAvailable << QString::number(candidate);
     }
 
@@ -514,33 +804,11 @@ bool ensureTrustedHost(QWidget* parent, const QString& ip, const QString& user,
         return false;
     }
 
-    const QByteArray hostUtf8 = ip.toUtf8();
-    const QByteArray userUtf8 = user.toUtf8();
-    const int sshPort = 22;
     int sshTimeoutSeconds = deployOptions.useCiscoShellLogin ? 120 : 60;
-
-    ssh_options_set(session, SSH_OPTIONS_HOST, hostUtf8.constData());
-    if (!userUtf8.isEmpty())
-        ssh_options_set(session, SSH_OPTIONS_USER, userUtf8.constData());
-    ssh_options_set(session, SSH_OPTIONS_PORT, &sshPort);
-    ssh_options_set(session, SSH_OPTIONS_TIMEOUT, &sshTimeoutSeconds);
-
-    if (deployOptions.useCiscoShellLogin) {
-        const char* preferredHostKeys = "ssh-rsa,ecdsa-sha2-nistp256,ssh-ed25519";
-        const char* preferredKex = "diffie-hellman-group14-sha1,diffie-hellman-group-exchange-sha1,diffie-hellman-group-exchange-sha256,ecdh-sha2-nistp256";
-        const char* preferredCiphers = "aes128-ctr,aes192-ctr,aes256-ctr,aes128-cbc,3des-cbc";
-        const char* preferredHmacs = "hmac-sha1,hmac-sha2-256,hmac-sha2-512";
-        ssh_options_set(session, SSH_OPTIONS_HOSTKEYS, preferredHostKeys);
-        ssh_options_set(session, SSH_OPTIONS_KEY_EXCHANGE, preferredKex);
-        ssh_options_set(session, SSH_OPTIONS_CIPHERS_C_S, preferredCiphers);
-        ssh_options_set(session, SSH_OPTIONS_CIPHERS_S_C, preferredCiphers);
-        ssh_options_set(session, SSH_OPTIONS_HMAC_C_S, preferredHmacs);
-        ssh_options_set(session, SSH_OPTIONS_HMAC_S_C, preferredHmacs);
-    }
+    applySshOptions(session, ip, user, deployOptions.useCiscoShellLogin, sshTimeoutSeconds);
 
     const auto cleanupSession = [&]() {
-        ssh_disconnect(session);
-        ssh_free(session);
+        closeSshSession(session);
     };
 
     if (ssh_connect(session) != SSH_OK) {
@@ -657,36 +925,12 @@ bool fetchCiscoWlanSummary(QWidget* parent, const QString& ip, const QString& us
     }
 
     ssh_channel channel = nullptr;
-    const QByteArray hostUtf8 = ip.toUtf8();
-    const QByteArray userUtf8 = user.toUtf8();
-    const int sshPort = 22;
-    int sshTimeoutSeconds = 120;
-
-    ssh_options_set(session, SSH_OPTIONS_HOST, hostUtf8.constData());
-    ssh_options_set(session, SSH_OPTIONS_USER, userUtf8.constData());
-    ssh_options_set(session, SSH_OPTIONS_PORT, &sshPort);
-    ssh_options_set(session, SSH_OPTIONS_TIMEOUT, &sshTimeoutSeconds);
-
-    const char* preferredHostKeys = "ssh-rsa,ecdsa-sha2-nistp256,ssh-ed25519";
-    const char* preferredKex = "diffie-hellman-group14-sha1,diffie-hellman-group-exchange-sha1,diffie-hellman-group-exchange-sha256,ecdh-sha2-nistp256";
-    const char* preferredCiphers = "aes128-ctr,aes192-ctr,aes256-ctr,aes128-cbc,3des-cbc";
-    const char* preferredHmacs = "hmac-sha1,hmac-sha2-256,hmac-sha2-512";
-    ssh_options_set(session, SSH_OPTIONS_HOSTKEYS, preferredHostKeys);
-    ssh_options_set(session, SSH_OPTIONS_KEY_EXCHANGE, preferredKex);
-    ssh_options_set(session, SSH_OPTIONS_CIPHERS_C_S, preferredCiphers);
-    ssh_options_set(session, SSH_OPTIONS_CIPHERS_S_C, preferredCiphers);
-    ssh_options_set(session, SSH_OPTIONS_HMAC_C_S, preferredHmacs);
-    ssh_options_set(session, SSH_OPTIONS_HMAC_S_C, preferredHmacs);
+    const long sshTimeoutSeconds = 120;
+    applySshOptions(session, ip, user, true, sshTimeoutSeconds);
 
     const auto cleanup = [&]() {
-        if (channel) {
-            ssh_channel_send_eof(channel);
-            ssh_channel_close(channel);
-            ssh_channel_free(channel);
-            channel = nullptr;
-        }
-        ssh_disconnect(session);
-        ssh_free(session);
+        closeSshChannel(channel);
+        closeSshSession(session);
     };
 
     if (ssh_connect(session) != SSH_OK) {
@@ -712,111 +956,21 @@ bool fetchCiscoWlanSummary(QWidget* parent, const QString& ip, const QString& us
     }
 
     char readBuf[4096];
-    auto readNonBlocking = [&](QString* collected) {
-        bool receivedData = false;
-        int n = 0;
-        while ((n = ssh_channel_read_nonblocking(channel, readBuf, sizeof(readBuf) - 1, 0)) > 0) {
-            readBuf[n] = '\0';
-            const QString chunk = QString::fromLocal8Bit(readBuf, n);
-            if (collected)
-                collected->append(chunk);
-            receivedData = true;
-        }
-        return receivedData;
-    };
-    auto waitForPrompt = [&](const QStringList& prompts, int timeoutMs, QString* transcript, const QString& stageLabel) {
-        QString collected = transcript ? *transcript : QString();
-        QElapsedTimer timer;
-        timer.start();
-        while (timer.elapsed() < timeoutMs) {
-            const bool receivedData = readNonBlocking(&collected);
-            const QString lowered = collected.toLower();
-            for (const QString& prompt : prompts) {
-                if (lowered.contains(prompt.toLower())) {
-                    if (transcript)
-                        *transcript = collected;
-                    return true;
-                }
-            }
-            if (!receivedData)
-                QThread::msleep(100);
-        }
-
-        if (errorMessage) {
-            QString snippet = collected.simplified();
-            if (snippet.length() > 220)
-                snippet = snippet.left(220) + "...";
-            if (snippet.isEmpty())
-                snippet = "(no controller output received)";
-            *errorMessage = QString("Timed out during %1. Last output: %2").arg(stageLabel, snippet);
-        }
-        return false;
-    };
-    auto writeShellLine = [&](const QString& line) {
-        const QByteArray payload = (line + "\n").toUtf8();
-        return ssh_channel_write(channel, payload.constData(), static_cast<uint32_t>(payload.size()));
-    };
-    auto waitForCiscoPrompt = [&](const QStringList& prompts, const QString& stageLabel, QString* transcript) {
-        if (waitForPrompt(prompts, 20000, transcript, stageLabel))
-            return true;
-        writeShellLine(QString());
-        if (waitForPrompt(prompts, 20000, transcript, stageLabel + " retry"))
-            return true;
-        writeShellLine(QString());
-        return waitForPrompt(prompts, 20000, transcript, stageLabel + " final retry");
-    };
-
-    ssh_channel_write(channel, "\n", 1);
-    QThread::msleep(300);
-
-    QString transcript;
-    if (!waitForCiscoPrompt({ "login as:", "please enter the user", "user:", "password:", ">", "#" }, "initial Cisco controller prompt", &transcript)) {
+    if (!completeCiscoShellLogin(channel, user, pass, readBuf, sizeof(readBuf), errorMessage)) {
         cleanup();
         return false;
     }
 
-    QString loweredTranscript = transcript.toLower();
-    if (loweredTranscript.contains("login as:")) {
-        writeShellLine(QString());
-        transcript.clear();
-        if (!waitForCiscoPrompt({ "please enter the user", "user:", "password:", ">", "#" }, "blank login name handoff", &transcript)) {
-            cleanup();
-            return false;
-        }
-        loweredTranscript = transcript.toLower();
+    QString ignoredOutput;
+    waitForShellQuiet(channel, readBuf, sizeof(readBuf), 250, 1500, &ignoredOutput);
+    if (writeShellLine(channel, "config paging disable") == SSH_ERROR) {
+        if (errorMessage)
+            *errorMessage = "Failed to send 'config paging disable' to the Cisco controller.";
+        cleanup();
+        return false;
     }
-
-    if (loweredTranscript.contains("user:")) {
-        writeShellLine(user);
-        transcript.clear();
-        if (!waitForCiscoPrompt({ "password:", "user:", ">", "#" }, "username submission", &transcript)) {
-            cleanup();
-            return false;
-        }
-        loweredTranscript = transcript.toLower();
-        if (loweredTranscript.contains("user:")) {
-            writeShellLine(user);
-            transcript.clear();
-            if (!waitForCiscoPrompt({ "password:", ">", "#" }, "username resubmission", &transcript)) {
-                cleanup();
-                return false;
-            }
-            loweredTranscript = transcript.toLower();
-        }
-    }
-
-    if (loweredTranscript.contains("password:")) {
-        writeShellLine(pass);
-        transcript.clear();
-        if (!waitForPrompt({ ">", "#", "save config", "config wlan" }, 20000, &transcript, "password submission")) {
-            cleanup();
-            return false;
-        }
-    }
-
-    writeShellLine("config paging disable");
-    QThread::msleep(250);
-    if (writeShellLine("show wlan summary") == SSH_ERROR) {
+    waitForShellQuiet(channel, readBuf, sizeof(readBuf), 250, 1500, &ignoredOutput);
+    if (writeShellLine(channel, "show wlan summary") == SSH_ERROR) {
         if (errorMessage)
             *errorMessage = "Failed to send 'show wlan summary' to the Cisco controller.";
         cleanup();
@@ -841,9 +995,7 @@ bool fetchCiscoWlanSummary(QWidget* parent, const QString& ip, const QString& us
             readBuf[n] = '\0';
             QString chunk = QString::fromLocal8Bit(readBuf, n);
             while (chunk.contains("--More--", Qt::CaseInsensitive) || chunk.contains("(q)uit", Qt::CaseInsensitive)) {
-                chunk.replace("--More-- or (q)uit", "", Qt::CaseInsensitive);
-                chunk.replace("--More--", "", Qt::CaseInsensitive);
-                chunk.replace("(q)uit", "", Qt::CaseInsensitive);
+                chunk = stripCiscoPagerTokens(chunk);
                 if (sendPagerContinue() == SSH_ERROR) {
                     if (errorMessage)
                         *errorMessage = "Cisco paging prompt appeared, but the app could not continue reading.";
@@ -860,7 +1012,7 @@ bool fetchCiscoWlanSummary(QWidget* parent, const QString& ip, const QString& us
         } else if (quietTimer.elapsed() >= 1200 && !sanitizeCiscoWlanSummaryTranscript(summaryOutput).isEmpty()) {
             break;
         }
-        QThread::msleep(100);
+        QThread::msleep(kCiscoReadPollMs);
     }
 
     if (sanitizeCiscoWlanSummaryTranscript(summaryOutput).isEmpty()) {
@@ -1009,7 +1161,7 @@ QString buildAppStyleSheet(bool darkMode) {
             background-color: #1F6DB2;
             border: 2px solid #62C8FF;
         }
-        QPushButton#btn_wizard, QPushButton#btn_generate, QPushButton#btn_generate_cisco, QPushButton#btn_test_ssh, QPushButton#btn_open_mremote, QPushButton#btn_deploy, QPushButton#btn_update_app {
+        QPushButton#btn_wizard, QPushButton#btn_generate, QPushButton#btn_generate_cisco, QPushButton#btn_test_ssh, QPushButton#btn_open_mremote, QPushButton#btn_deploy, QPushButton#btn_update_app, QPushButton#btn_testing_update_app {
             background-color: #1F6DB2;
             color: #FFFFFF;
             font-weight: 800;
@@ -1017,11 +1169,11 @@ QString buildAppStyleSheet(bool darkMode) {
             border-radius: 12px;
             padding: 10px 16px;
         }
-        QPushButton#btn_wizard:hover, QPushButton#btn_generate:hover, QPushButton#btn_generate_cisco:hover, QPushButton#btn_test_ssh:hover, QPushButton#btn_open_mremote:hover, QPushButton#btn_deploy:hover, QPushButton#btn_update_app:hover {
+        QPushButton#btn_wizard:hover, QPushButton#btn_generate:hover, QPushButton#btn_generate_cisco:hover, QPushButton#btn_test_ssh:hover, QPushButton#btn_open_mremote:hover, QPushButton#btn_deploy:hover, QPushButton#btn_update_app:hover, QPushButton#btn_testing_update_app:hover {
             background-color: #2A84D5;
             border: 1px solid #71D0FF;
         }
-        QPushButton#btn_deploy:disabled, QPushButton#btn_test_ssh:disabled, QPushButton#btn_open_mremote:disabled, QPushButton#btn_update_app:disabled {
+        QPushButton#btn_deploy:disabled, QPushButton#btn_test_ssh:disabled, QPushButton#btn_open_mremote:disabled, QPushButton#btn_update_app:disabled, QPushButton#btn_testing_update_app:disabled {
             background-color: #22364E;
             color: #5D7895;
             border: 1px solid #2A415C;
@@ -1214,7 +1366,7 @@ QString buildAppStyleSheet(bool darkMode) {
             background-color: #0F6CBD;
             border: 2px solid #0F6CBD;
         }
-        QPushButton#btn_wizard, QPushButton#btn_generate, QPushButton#btn_generate_cisco, QPushButton#btn_test_ssh, QPushButton#btn_open_mremote, QPushButton#btn_deploy, QPushButton#btn_update_app {
+        QPushButton#btn_wizard, QPushButton#btn_generate, QPushButton#btn_generate_cisco, QPushButton#btn_test_ssh, QPushButton#btn_open_mremote, QPushButton#btn_deploy, QPushButton#btn_update_app, QPushButton#btn_testing_update_app {
             background-color: #1673C5;
             color: #FFFFFF;
             font-weight: 800;
@@ -1222,11 +1374,11 @@ QString buildAppStyleSheet(bool darkMode) {
             border-radius: 12px;
             padding: 10px 16px;
         }
-        QPushButton#btn_wizard:hover, QPushButton#btn_generate:hover, QPushButton#btn_generate_cisco:hover, QPushButton#btn_test_ssh:hover, QPushButton#btn_open_mremote:hover, QPushButton#btn_deploy:hover, QPushButton#btn_update_app:hover {
+        QPushButton#btn_wizard:hover, QPushButton#btn_generate:hover, QPushButton#btn_generate_cisco:hover, QPushButton#btn_test_ssh:hover, QPushButton#btn_open_mremote:hover, QPushButton#btn_deploy:hover, QPushButton#btn_update_app:hover, QPushButton#btn_testing_update_app:hover {
             background-color: #0F64AE;
             border: 1px solid #2D85D3;
         }
-        QPushButton#btn_deploy:disabled, QPushButton#btn_test_ssh:disabled, QPushButton#btn_open_mremote:disabled, QPushButton#btn_update_app:disabled {
+        QPushButton#btn_deploy:disabled, QPushButton#btn_test_ssh:disabled, QPushButton#btn_open_mremote:disabled, QPushButton#btn_update_app:disabled, QPushButton#btn_testing_update_app:disabled {
             background-color: #DFE6EF;
             color: #7C8AA0;
             border: 1px solid #D1DAE5;
@@ -1331,28 +1483,11 @@ void SshWorker::run() {
         return;
     }
 
-    ssh_options_set(session, SSH_OPTIONS_HOST, targetIp.toStdString().c_str());
-    ssh_options_set(session, SSH_OPTIONS_USER, username.toStdString().c_str());
-    const int sshPort = 22;
     const bool isCiscoDeploy = deployOptions.useCiscoShellLogin;
     const long sshTimeoutSeconds = isCiscoDeploy ? 60 : 10;
-    const int promptTimeoutMs = isCiscoDeploy ? 20000 : 10000;
-    ssh_options_set(session, SSH_OPTIONS_PORT, &sshPort);
-    ssh_options_set(session, SSH_OPTIONS_TIMEOUT, &sshTimeoutSeconds);
+    applySshOptions(session, targetIp, username, isCiscoDeploy, sshTimeoutSeconds);
 
     if (isCiscoDeploy) {
-        const char* preferredHostKeys = "ssh-rsa,rsa-sha2-256,rsa-sha2-512,ecdsa-sha2-nistp256";
-        const char* preferredKex = "diffie-hellman-group14-sha1,diffie-hellman-group14-sha256,diffie-hellman-group1-sha1,ecdh-sha2-nistp256,curve25519-sha256";
-        const char* preferredCiphers = "aes128-ctr,aes256-ctr,aes128-cbc,aes256-cbc,3des-cbc";
-        const char* preferredHmacs = "hmac-sha1,hmac-sha2-256,hmac-sha2-512";
-
-        ssh_options_set(session, SSH_OPTIONS_HOSTKEYS, preferredHostKeys);
-        ssh_options_set(session, SSH_OPTIONS_KEY_EXCHANGE, preferredKex);
-        ssh_options_set(session, SSH_OPTIONS_CIPHERS_C_S, preferredCiphers);
-        ssh_options_set(session, SSH_OPTIONS_CIPHERS_S_C, preferredCiphers);
-        ssh_options_set(session, SSH_OPTIONS_HMAC_C_S, preferredHmacs);
-        ssh_options_set(session, SSH_OPTIONS_HMAC_S_C, preferredHmacs);
-
         emit updateLog(">>> Cisco SSH compatibility mode enabled (port 22, legacy ciphers/kex allowed).");
         emit updateLog(">>> Cisco SSH connect timeout set to 60 seconds.");
     }
@@ -1360,7 +1495,7 @@ void SshWorker::run() {
     emit updateLog(">>> Stage: opening SSH transport...");
     if (ssh_connect(session) != SSH_OK) {
         emit updateLog(">>> ERROR: SSH transport failed before authentication: " + QString(ssh_get_error(session)));
-        ssh_free(session);
+        closeSshSession(session);
         emit deployFinished();
         return;
     }
@@ -1373,8 +1508,7 @@ void SshWorker::run() {
         emit updateLog(">>> ERROR: Authentication failed: " + QString(ssh_get_error(session)));
         password.fill('0');
         password.clear();
-        ssh_disconnect(session);
-        ssh_free(session);
+        closeSshSession(session);
         emit deployFinished();
         return;
     }
@@ -1384,8 +1518,8 @@ void SshWorker::run() {
     ssh_channel channel = ssh_channel_new(session);
     if (!channel || ssh_channel_open_session(channel) != SSH_OK) {
         emit updateLog(">>> ERROR: Failed to open channel.");
-        ssh_disconnect(session);
-        ssh_free(session);
+        closeSshChannel(channel);
+        closeSshSession(session);
         emit deployFinished();
         return;
     }
@@ -1393,9 +1527,8 @@ void SshWorker::run() {
     ssh_channel_request_pty(channel);
     if (ssh_channel_request_shell(channel) != SSH_OK) {
         emit updateLog(">>> ERROR: Failed to request shell.");
-        ssh_channel_free(channel);
-        ssh_disconnect(session);
-        ssh_free(session);
+        closeSshChannel(channel);
+        closeSshSession(session);
         emit deployFinished();
         return;
     }
@@ -1403,191 +1536,44 @@ void SshWorker::run() {
     emit updateLog(">>> Stage: interactive shell ready.");
 
     char readBuf[4096];
+    auto emitChunk = [this](const QString& chunk) { emit updateLog(chunk); };
     auto drainShellOutput = [&](int timeoutMs, QString* combinedOutput = nullptr) {
-        QElapsedTimer timer;
-        timer.start();
-        while (timer.elapsed() < timeoutMs) {
-            bool receivedData = false;
-            int n = 0;
-            while ((n = ssh_channel_read_nonblocking(channel, readBuf, sizeof(readBuf) - 1, 0)) > 0) {
-                readBuf[n] = '\0';
-                const QString chunk = QString::fromLocal8Bit(readBuf, n);
-                emit updateLog(chunk);
-                if (combinedOutput)
-                    combinedOutput->append(chunk);
-                receivedData = true;
-            }
-            if (!receivedData)
-                QThread::msleep(100);
-        }
+        waitForShellQuiet(channel, readBuf, sizeof(readBuf), timeoutMs, timeoutMs, combinedOutput, emitChunk);
     };
-    auto waitForPrompt = [&](const QStringList& prompts, int timeoutMs, QString* combinedOutput = nullptr, const QString& stageLabel = QString()) {
-        QString collected = combinedOutput ? *combinedOutput : QString();
-        QElapsedTimer timer;
-        timer.start();
-        while (timer.elapsed() < timeoutMs) {
-            int n = 0;
-            bool receivedData = false;
-            while ((n = ssh_channel_read_nonblocking(channel, readBuf, sizeof(readBuf) - 1, 0)) > 0) {
-                readBuf[n] = '\0';
-                const QString chunk = QString::fromLocal8Bit(readBuf, n);
-                emit updateLog(chunk);
-                collected.append(chunk);
-                receivedData = true;
-            }
-
-            const QString lowered = collected.toLower();
-            for (const QString& prompt : prompts) {
-                if (lowered.contains(prompt.toLower())) {
-                    if (combinedOutput)
-                        *combinedOutput = collected;
-                    return true;
-                }
-            }
-
-            if (!receivedData)
-                QThread::msleep(100);
-        }
-
-        if (combinedOutput)
-            *combinedOutput = collected;
-        if (!stageLabel.isEmpty()) {
-            QString snippet = collected.simplified();
-            if (snippet.length() > 220)
-                snippet = snippet.left(220) + "...";
-            if (snippet.isEmpty())
-                snippet = "(no controller output received)";
-            emit updateLog(">>> ERROR: Timed out during " + stageLabel + " after " + QString::number(timeoutMs / 1000.0, 'f', 0) + " seconds. Last output: " + snippet);
-        }
-        return false;
-    };
-    auto writeShellLine = [&](const QString& line) {
-        const QByteArray payload = (line + "\n").toUtf8();
-        ssh_channel_write(channel, payload.constData(), static_cast<uint32_t>(payload.size()));
+    auto waitForShellPrompt = [&](const QStringList& prompts, int timeoutMs, QString* combinedOutput = nullptr, const QString& stageLabel = QString()) {
+        QString error;
+        const bool ok = waitForPrompt(channel, readBuf, sizeof(readBuf), prompts, timeoutMs, combinedOutput, &error, stageLabel, emitChunk);
+        if (!ok && !stageLabel.isEmpty())
+            emit updateLog(">>> ERROR: " + error);
+        return ok;
     };
     auto drainUntilQuiet = [&](int quietWindowMs, int maxWaitMs) {
-        QElapsedTimer totalTimer;
-        QElapsedTimer quietTimer;
-        totalTimer.start();
-        quietTimer.start();
-
-        while (totalTimer.elapsed() < maxWaitMs) {
-            bool receivedData = false;
-            int n = 0;
-            while ((n = ssh_channel_read_nonblocking(channel, readBuf, sizeof(readBuf) - 1, 0)) > 0) {
-                readBuf[n] = '\0';
-                emit updateLog(QString::fromLocal8Bit(readBuf, n));
-                receivedData = true;
-            }
-
-            if (receivedData) {
-                quietTimer.restart();
-            }
-            else if (quietTimer.elapsed() >= quietWindowMs) {
-                return true;
-            }
-
-            QThread::msleep(100);
-        }
-
-        return false;
+        return waitForShellQuiet(channel, readBuf, sizeof(readBuf), quietWindowMs, maxWaitMs, nullptr, emitChunk);
     };
 
     if (deployOptions.sendInitialEnter) {
-        const QByteArray initialEnter("\n");
-        ssh_channel_write(channel, initialEnter.constData(),
-            static_cast<uint32_t>(initialEnter.size()));
+        ssh_channel_write(channel, "\n", 1);
         drainShellOutput(400);
     }
 
     if (deployOptions.useCiscoShellLogin) {
         emit updateLog(">>> Cisco shell login: waiting for controller prompts...");
-        auto waitForCiscoPrompt = [&](const QStringList& prompts, const QString& stageLabel, QString* transcript) {
-            if (waitForPrompt(prompts, promptTimeoutMs, transcript, stageLabel))
-                return true;
-
-            emit updateLog(">>> Cisco shell login: no prompt detected, sending another Enter...");
-            writeShellLine(QString());
-            if (waitForPrompt(prompts, promptTimeoutMs, transcript, stageLabel + " retry"))
-                return true;
-
-            emit updateLog(">>> Cisco shell login: still waiting, sending one final Enter...");
-            writeShellLine(QString());
-            return waitForPrompt(prompts, promptTimeoutMs, transcript, stageLabel + " final retry");
-        };
-
-        QString loginTranscript;
-        if (!waitForCiscoPrompt({ "login as:", "please enter the user", "user:", "password:", ">", "#" }, "initial Cisco controller prompt", &loginTranscript)) {
-            ssh_channel_send_eof(channel);
-            ssh_channel_close(channel);
-            ssh_channel_free(channel);
-            ssh_disconnect(session);
-            ssh_free(session);
+        QString loginError;
+        if (!completeCiscoShellLogin(
+                channel,
+                username,
+                password,
+                readBuf,
+                sizeof(readBuf),
+                &loginError,
+                emitChunk,
+                [this](const QString& message) { emit updateLog(message); })) {
+            if (!loginError.isEmpty())
+                emit updateLog(">>> ERROR: " + loginError);
+            closeSshChannel(channel);
+            closeSshSession(session);
             emit deployFinished();
             return;
-        }
-        QString loweredTranscript = loginTranscript.toLower();
-
-        if (loweredTranscript.contains("login as:")) {
-            emit updateLog(">>> Cisco shell login: sending blank login name...");
-            writeShellLine(QString());
-            loginTranscript.clear();
-            if (!waitForCiscoPrompt({ "please enter the user", "user:", "password:", ">", "#" }, "blank login name handoff", &loginTranscript)) {
-                ssh_channel_send_eof(channel);
-                ssh_channel_close(channel);
-                ssh_channel_free(channel);
-                ssh_disconnect(session);
-                ssh_free(session);
-                emit deployFinished();
-                return;
-            }
-            loweredTranscript = loginTranscript.toLower();
-        }
-
-        if (loweredTranscript.contains("user:")) {
-            emit updateLog(">>> Cisco shell login: sending username...");
-            writeShellLine(username);
-            loginTranscript.clear();
-            if (!waitForCiscoPrompt({ "password:", "user:", ">", "#" }, "username submission", &loginTranscript)) {
-                ssh_channel_send_eof(channel);
-                ssh_channel_close(channel);
-                ssh_channel_free(channel);
-                ssh_disconnect(session);
-                ssh_free(session);
-                emit deployFinished();
-                return;
-            }
-            loweredTranscript = loginTranscript.toLower();
-            if (loweredTranscript.contains("user:")) {
-                emit updateLog(">>> Cisco shell login: controller repeated user prompt, sending username again...");
-                writeShellLine(username);
-                loginTranscript.clear();
-                if (!waitForCiscoPrompt({ "password:", ">", "#" }, "username resubmission", &loginTranscript)) {
-                    ssh_channel_send_eof(channel);
-                    ssh_channel_close(channel);
-                    ssh_channel_free(channel);
-                    ssh_disconnect(session);
-                    ssh_free(session);
-                    emit deployFinished();
-                    return;
-                }
-                loweredTranscript = loginTranscript.toLower();
-            }
-        }
-
-        if (loweredTranscript.contains("password:")) {
-            emit updateLog(">>> Cisco shell login: sending password...");
-            writeShellLine(password);
-            loginTranscript.clear();
-            if (!waitForPrompt({ ">", "#", "save config", "config wlan" }, promptTimeoutMs, &loginTranscript, "password submission")) {
-                ssh_channel_send_eof(channel);
-                ssh_channel_close(channel);
-                ssh_channel_free(channel);
-                ssh_disconnect(session);
-                ssh_free(session);
-                emit deployFinished();
-                return;
-            }
         }
 
         emit updateLog(">>> Cisco shell login: controller prompt confirmed.");
@@ -1623,11 +1609,8 @@ void SshWorker::run() {
         if (ssh_channel_write(channel, payload.constData(),
             static_cast<uint32_t>(payload.size())) == SSH_ERROR) {
             emit updateLog(">>> ERROR: Failed while sending command: " + line);
-            ssh_channel_send_eof(channel);
-            ssh_channel_close(channel);
-            ssh_channel_free(channel);
-            ssh_disconnect(session);
-            ssh_free(session);
+            closeSshChannel(channel);
+            closeSshSession(session);
             emit deployFinished();
             return;
         }
@@ -1644,11 +1627,8 @@ void SshWorker::run() {
 
     emit updateLog("\n>>> DEPLOYMENT COMPLETE. Disconnecting...");
 
-    ssh_channel_send_eof(channel);
-    ssh_channel_close(channel);
-    ssh_channel_free(channel);
-    ssh_disconnect(session);
-    ssh_free(session);
+    closeSshChannel(channel);
+    closeSshSession(session);
 
     emit deployFinished();
 }
@@ -1661,20 +1641,14 @@ ControllerSessionManager::~ControllerSessionManager() {
 }
 
 void ControllerSessionManager::closeSession() {
-    if (channel) {
-        ssh_channel_send_eof(channel);
-        ssh_channel_close(channel);
-        ssh_channel_free(channel);
-        channel = nullptr;
-    }
-    if (session) {
-        ssh_disconnect(session);
-        ssh_free(session);
-        session = nullptr;
-    }
+    closeSshChannel(channel);
+    closeSshSession(session);
     connected = false;
     currentIp.clear();
     currentUser.clear();
+    currentPassword.fill('0');
+    currentPassword.clear();
+    currentCiscoMode = false;
 }
 
 void ControllerSessionManager::disconnectPersistent() {
@@ -1703,25 +1677,8 @@ void ControllerSessionManager::connectPersistent(QString ip, QString user, QStri
         return;
     }
 
-    const int sshPort = 22;
     const long sshTimeoutSeconds = 60;
-    ssh_options_set(session, SSH_OPTIONS_HOST, ip.toStdString().c_str());
-    ssh_options_set(session, SSH_OPTIONS_USER, user.toStdString().c_str());
-    ssh_options_set(session, SSH_OPTIONS_PORT, &sshPort);
-    ssh_options_set(session, SSH_OPTIONS_TIMEOUT, &sshTimeoutSeconds);
-
-    if (isCiscoMode) {
-        const char* preferredHostKeys = "ssh-rsa,rsa-sha2-256,rsa-sha2-512,ecdsa-sha2-nistp256";
-        const char* preferredKex = "diffie-hellman-group14-sha1,diffie-hellman-group14-sha256,diffie-hellman-group1-sha1,ecdh-sha2-nistp256,curve25519-sha256";
-        const char* preferredCiphers = "aes128-ctr,aes256-ctr,aes128-cbc,aes256-cbc,3des-cbc";
-        const char* preferredHmacs = "hmac-sha1,hmac-sha2-256,hmac-sha2-512";
-        ssh_options_set(session, SSH_OPTIONS_HOSTKEYS, preferredHostKeys);
-        ssh_options_set(session, SSH_OPTIONS_KEY_EXCHANGE, preferredKex);
-        ssh_options_set(session, SSH_OPTIONS_CIPHERS_C_S, preferredCiphers);
-        ssh_options_set(session, SSH_OPTIONS_CIPHERS_S_C, preferredCiphers);
-        ssh_options_set(session, SSH_OPTIONS_HMAC_C_S, preferredHmacs);
-        ssh_options_set(session, SSH_OPTIONS_HMAC_S_C, preferredHmacs);
-    }
+    applySshOptions(session, ip, user, isCiscoMode, sshTimeoutSeconds);
 
     if (ssh_connect(session) != SSH_OK) {
         const QString error = controllerLabel + " SSH transport failed before authentication: " + QString(ssh_get_error(session));
@@ -1758,119 +1715,24 @@ void ControllerSessionManager::connectPersistent(QString ip, QString user, QStri
     }
 
     char readBuf[4096];
-    auto readNonBlocking = [&](QString* collected) {
-        bool receivedData = false;
-        int n = 0;
-        while ((n = ssh_channel_read_nonblocking(channel, readBuf, sizeof(readBuf) - 1, 0)) > 0) {
-            readBuf[n] = '\0';
-            const QString chunk = QString::fromLocal8Bit(readBuf, n);
-            emit logMessage(chunk);
-            if (collected)
-                collected->append(chunk);
-            receivedData = true;
-        }
-        return receivedData;
-    };
-    auto waitForPrompt = [&](const QStringList& prompts, int timeoutMs, QString* transcript, const QString& stageLabel) {
-        QString collected = transcript ? *transcript : QString();
-        QElapsedTimer timer;
-        timer.start();
-        while (timer.elapsed() < timeoutMs) {
-            const bool receivedData = readNonBlocking(&collected);
-            const QString lowered = collected.toLower();
-            for (const QString& prompt : prompts) {
-                if (lowered.contains(prompt.toLower())) {
-                    if (transcript)
-                        *transcript = collected;
-                    return true;
-                }
-            }
-            if (!receivedData)
-                QThread::msleep(100);
-        }
-
-        QString snippet = collected.simplified();
-        if (snippet.length() > 220)
-            snippet = snippet.left(220) + "...";
-        if (snippet.isEmpty())
-            snippet = "(no controller output received)";
-        emit connectFinished(false, controllerLabel + " session timed out during " + stageLabel + ". Last output: " + snippet);
-        return false;
-    };
-    auto writeShellLine = [&](const QString& line) {
-        const QByteArray payload = (line + "\n").toUtf8();
-        ssh_channel_write(channel, payload.constData(), static_cast<uint32_t>(payload.size()));
-    };
+    auto emitChunk = [this](const QString& chunk) { emit logMessage(chunk); };
 
     if (isCiscoMode) {
-        const QByteArray initialEnter("\n");
-        ssh_channel_write(channel, initialEnter.constData(), static_cast<uint32_t>(initialEnter.size()));
-        QThread::msleep(300);
-        auto waitForCiscoPrompt = [&](const QStringList& prompts, const QString& stageLabel, QString* transcript) {
-            if (waitForPrompt(prompts, 20000, transcript, stageLabel))
-                return true;
-
-            emit logMessage(">>> Cisco persistent session: no prompt detected, sending another Enter...");
-            writeShellLine(QString());
-            if (waitForPrompt(prompts, 20000, transcript, stageLabel + " retry"))
-                return true;
-
-            emit logMessage(">>> Cisco persistent session: still waiting, sending one final Enter...");
-            writeShellLine(QString());
-            return waitForPrompt(prompts, 20000, transcript, stageLabel + " final retry");
-        };
-        QString transcript;
-        if (!waitForCiscoPrompt({ "login as:", "please enter the user", "user:", "password:", ">", "#" }, "initial Cisco controller prompt", &transcript)) {
+        QString loginError;
+        if (!completeCiscoShellLogin(
+                channel,
+                user,
+                pass,
+                readBuf,
+                sizeof(readBuf),
+                &loginError,
+                emitChunk,
+                [this](const QString& message) { emit logMessage(message); })) {
+            if (!loginError.isEmpty())
+                emit connectFinished(false, controllerLabel + " session " + loginError.toLower());
             closeSession();
             emit connectionStateChanged(false, isCiscoMode, QString(), QString());
             return;
-        }
-
-        QString loweredTranscript = transcript.toLower();
-        if (loweredTranscript.contains("login as:")) {
-            emit logMessage(">>> Cisco persistent session: sending blank login name...");
-            writeShellLine(QString());
-            transcript.clear();
-            if (!waitForCiscoPrompt({ "please enter the user", "user:", "password:", ">", "#" }, "blank login name handoff", &transcript)) {
-                closeSession();
-                emit connectionStateChanged(false, isCiscoMode, QString(), QString());
-                return;
-            }
-            loweredTranscript = transcript.toLower();
-        }
-
-        if (loweredTranscript.contains("user:")) {
-            emit logMessage(">>> Cisco persistent session: sending username...");
-            writeShellLine(user);
-            transcript.clear();
-            if (!waitForCiscoPrompt({ "password:", "user:", ">", "#" }, "username submission", &transcript)) {
-                closeSession();
-                emit connectionStateChanged(false, isCiscoMode, QString(), QString());
-                return;
-            }
-            loweredTranscript = transcript.toLower();
-            if (loweredTranscript.contains("user:")) {
-                emit logMessage(">>> Cisco persistent session: controller repeated user prompt, sending username again...");
-                writeShellLine(user);
-                transcript.clear();
-                if (!waitForCiscoPrompt({ "password:", ">", "#" }, "username resubmission", &transcript)) {
-                    closeSession();
-                    emit connectionStateChanged(false, isCiscoMode, QString(), QString());
-                    return;
-                }
-                loweredTranscript = transcript.toLower();
-            }
-        }
-
-        if (loweredTranscript.contains("password:")) {
-            emit logMessage(">>> Cisco persistent session: sending password...");
-            writeShellLine(pass);
-            transcript.clear();
-            if (!waitForPrompt({ ">", "#", "save config", "config wlan" }, 20000, &transcript, "password submission")) {
-                closeSession();
-                emit connectionStateChanged(false, isCiscoMode, QString(), QString());
-                return;
-            }
         }
     }
 
@@ -1920,9 +1782,12 @@ void ControllerSessionManager::deployPersistentInternal(QString script, bool all
     emit logMessage(">>> Reusing active " + controllerLabel + " session for deployment...");
 
     char readBuf[4096];
+    auto emitChunk = [this](const QString& chunk) { emit logMessage(chunk); };
     QString cleanScript = script;
     cleanScript.replace("\r\n", "\n");
     const QStringList lines = cleanScript.split('\n', Qt::SkipEmptyParts);
+    QString shellOutput;
+    waitForShellQuiet(channel, readBuf, sizeof(readBuf), 250, 1500, &shellOutput, emitChunk);
     for (const QString& line : lines) {
         const QByteArray payload = (line + "\n").toUtf8();
         if (ssh_channel_write(channel, payload.constData(), static_cast<uint32_t>(payload.size())) == SSH_ERROR) {
@@ -1935,28 +1800,10 @@ void ControllerSessionManager::deployPersistentInternal(QString script, bool all
             return;
         }
 
-        QThread::msleep(150);
-        int n = ssh_channel_read_nonblocking(channel, readBuf, sizeof(readBuf) - 1, 0);
-        if (n > 0) {
-            readBuf[n] = '\0';
-            emit logMessage(QString::fromLocal8Bit(readBuf, n));
-        }
+        waitForShellQuiet(channel, readBuf, sizeof(readBuf), 250, 2000, &shellOutput, emitChunk);
     }
 
-    QThread::msleep(500);
-    QElapsedTimer timer;
-    timer.start();
-    while (timer.elapsed() < 1500) {
-        bool receivedData = false;
-        int n = 0;
-        while ((n = ssh_channel_read_nonblocking(channel, readBuf, sizeof(readBuf) - 1, 0)) > 0) {
-            readBuf[n] = '\0';
-            emit logMessage(QString::fromLocal8Bit(readBuf, n));
-            receivedData = true;
-        }
-        if (!receivedData)
-            QThread::msleep(100);
-    }
+    waitForShellQuiet(channel, readBuf, sizeof(readBuf), 1200, 10000, &shellOutput, emitChunk);
 
     if (!ssh_channel_is_open(channel) || ssh_channel_is_eof(channel)) {
         const QString reconnectIp = currentIp;
@@ -2020,21 +1867,21 @@ void ControllerSessionManager::checkWlanIdsPersistentInternal(bool allowReconnec
         return;
     }
 
-    auto writeShellLine = [&](const QString& line) {
-        const QByteArray payload = (line + "\n").toUtf8();
-        return ssh_channel_write(channel, payload.constData(), static_cast<uint32_t>(payload.size()));
-    };
+    char readBuf[4096];
     auto sendPagerContinue = [&]() {
         const char space = ' ';
         return ssh_channel_write(channel, &space, 1);
     };
+    auto emitChunk = [this](const QString& chunk) { emit logMessage(chunk); };
 
     emit logMessage(">>> Disabling Cisco paging for WLAN ID check...");
-    if (writeShellLine("config paging disable") != SSH_ERROR)
-        QThread::msleep(250);
+    QString shellOutput;
+    waitForShellQuiet(channel, readBuf, sizeof(readBuf), 250, 1500, &shellOutput, emitChunk);
+    if (writeShellLine(channel, "config paging disable") != SSH_ERROR)
+        waitForShellQuiet(channel, readBuf, sizeof(readBuf), 250, 1500, &shellOutput, emitChunk);
 
     emit logMessage(">>> Running 'show wlan summary' on active Cisco session...");
-    if (writeShellLine("show wlan summary") == SSH_ERROR) {
+    if (writeShellLine(channel, "show wlan summary") == SSH_ERROR) {
         if (reconnectAndRetry())
             return;
 
@@ -2044,7 +1891,6 @@ void ControllerSessionManager::checkWlanIdsPersistentInternal(bool allowReconnec
         return;
     }
 
-    char readBuf[4096];
     QString transcript;
     QElapsedTimer totalTimer;
     QElapsedTimer quietTimer;
@@ -2059,9 +1905,7 @@ void ControllerSessionManager::checkWlanIdsPersistentInternal(bool allowReconnec
             QString chunk = QString::fromLocal8Bit(readBuf, n);
 
             while (chunk.contains("--More--", Qt::CaseInsensitive) || chunk.contains("(q)uit", Qt::CaseInsensitive)) {
-                chunk.replace("--More-- or (q)uit", "", Qt::CaseInsensitive);
-                chunk.replace("--More--", "", Qt::CaseInsensitive);
-                chunk.replace("(q)uit", "", Qt::CaseInsensitive);
+                chunk = stripCiscoPagerTokens(chunk);
                 if (sendPagerContinue() == SSH_ERROR) {
                     if (reconnectAndRetry())
                         return;
@@ -2086,7 +1930,7 @@ void ControllerSessionManager::checkWlanIdsPersistentInternal(bool allowReconnec
             break;
         }
 
-        QThread::msleep(100);
+        QThread::msleep(kCiscoReadPollMs);
     }
 
     if (sanitizeCiscoWlanSummaryTranscript(transcript).isEmpty()) {
@@ -2949,10 +2793,16 @@ ACS_Wynn_Builder::ACS_Wynn_Builder(QWidget* parent)
     btnUpdateApp->setObjectName("btn_update_app");
     btnUpdateApp->setToolTip("Check GitHub for the latest published release and install it into this folder.");
     toolbarControlsLayout->addWidget(btnUpdateApp, 0, Qt::AlignRight);
+    btnTestingUpdateApp = new QPushButton("TEST BUILD", toolbarCard);
+    btnTestingUpdateApp->setObjectName("btn_testing_update_app");
+    btnTestingUpdateApp->setToolTip("Check GitHub for the latest testing build and install it into this folder.");
+    toolbarControlsLayout->addWidget(btnTestingUpdateApp, 0, Qt::AlignRight);
 
     toolbarCardLayout->addWidget(toolbarControlsRow);
     ui->mainLayout->insertWidget(ui->mainLayout->indexOf(ui->card1), toolbarCard);
     connect(btnUpdateApp, &QPushButton::clicked, this, &ACS_Wynn_Builder::on_btn_update_app_clicked);
+    connect(btnTestingUpdateApp, &QPushButton::clicked, this, &ACS_Wynn_Builder::on_btn_testing_update_clicked);
+    btnTestingUpdateApp->setVisible(testingUpdateConfig.enabled);
 
     apGroupSelectorFrame = new QFrame(this);
     apGroupSelectorFrame->setObjectName("apGroupSelectorFrame");
@@ -3809,7 +3659,11 @@ void ACS_Wynn_Builder::on_profilePreset_currentIndexChanged(int) {
 }
 
 void ACS_Wynn_Builder::on_btn_update_app_clicked() {
-    checkForUpdates(true);
+    checkForUpdates(true, false);
+}
+
+void ACS_Wynn_Builder::on_btn_testing_update_clicked() {
+    checkForUpdates(true, true);
 }
 
 void ACS_Wynn_Builder::on_btn_select_ap_groups_clicked() {
@@ -4532,6 +4386,8 @@ void ACS_Wynn_Builder::applyAdaptiveTheme() {
 void ACS_Wynn_Builder::loadApGroupsFromJson() {
     QString configPath = apGroupsConfigPath();
     QFile file(configPath);
+    updateConfig.allowedHosts.clear();
+    testingUpdateConfig.allowedHosts.clear();
 
     if (file.exists() && file.open(QIODevice::ReadOnly)) {
         QJsonDocument doc = QJsonDocument::fromJson(file.readAll());
@@ -4589,6 +4445,24 @@ void ACS_Wynn_Builder::loadApGroupsFromJson() {
             }
             updateConfig.allowedHosts.removeDuplicates();
         }
+        if (obj.contains("testing_updater_enabled"))
+            testingUpdateConfig.enabled = obj["testing_updater_enabled"].toBool(false);
+        if (obj.contains("testing_updater_metadata_url"))
+            testingUpdateConfig.metadataUrl = QUrl(obj["testing_updater_metadata_url"].toString().trimmed());
+        if (obj.contains("testing_updater_package_url"))
+            testingUpdateConfig.packageUrl = QUrl(obj["testing_updater_package_url"].toString().trimmed());
+        if (obj.contains("testing_updater_expected_sha256"))
+            testingUpdateConfig.expectedSha256 = obj["testing_updater_expected_sha256"].toString().trimmed().toLower();
+        if (obj.contains("testing_updater_prefer_prerelease"))
+            testingUpdateConfig.preferPrerelease = obj["testing_updater_prefer_prerelease"].toBool(true);
+        if (obj.contains("testing_updater_allowed_hosts")) {
+            for (const QJsonValue& val : obj["testing_updater_allowed_hosts"].toArray()) {
+                const QString host = val.toString().trimmed().toLower();
+                if (!host.isEmpty())
+                    testingUpdateConfig.allowedHosts << host;
+            }
+            testingUpdateConfig.allowedHosts.removeDuplicates();
+        }
 
         file.close();
     }
@@ -4605,8 +4479,8 @@ void ACS_Wynn_Builder::loadApGroupsFromJson() {
         apData.ciscoInterfaces = defaultCiscoInterfaceList();
         updateConfig.enabled = true;
         updateConfig.metadataUrl = QUrl("https://api.github.com/repos/congiirepair/ACS_Wynn_Builder/releases/latest");
-        updateConfig.packageUrl = QUrl("https://github.com/congiirepair/ACS_Wynn_Builder/releases/download/1.0.8/ACS_Wynn_Builder_Update.zip");
-        updateConfig.expectedSha256 = "7232b492a7adb838841f8540d0a7618e957b7a933b44d9cbb6a6ef4dac2b0d0d";
+        updateConfig.packageUrl = QUrl("https://github.com/congiirepair/ACS_Wynn_Builder/releases/latest/download/ACS_Wynn_Builder_Update.zip");
+        updateConfig.expectedSha256 = "f6bc900c1c0fe7f65d41da0e1c4ef52d3142b95cc652fd0c36574647915584de";
         updateConfig.allowedHosts = {
             "api.github.com",
             "gist.githubusercontent.com",
@@ -4615,6 +4489,12 @@ void ACS_Wynn_Builder::loadApGroupsFromJson() {
             "objects.githubusercontent.com",
             "release-assets.githubusercontent.com"
         };
+        testingUpdateConfig.enabled = true;
+        testingUpdateConfig.metadataUrl = QUrl("https://api.github.com/repos/congiirepair/ACS_Wynn_Builder/releases");
+        testingUpdateConfig.packageUrl = QUrl("https://github.com/congiirepair/ACS_Wynn_Builder/releases/download/testing/ACS_Wynn_Builder_Update.zip");
+        testingUpdateConfig.expectedSha256.clear();
+        testingUpdateConfig.allowedHosts = updateConfig.allowedHosts;
+        testingUpdateConfig.preferPrerelease = true;
 
         // Write defaults out to JSON so future launches load from file,
         // including the new IP/path fields.
@@ -4643,11 +4523,20 @@ void ACS_Wynn_Builder::loadApGroupsFromJson() {
         obj["updater_metadata_url"] = updateConfig.metadataUrl.toString();
         obj["updater_package_url"] = updateConfig.packageUrl.toString();
         obj["updater_expected_sha256"] = updateConfig.expectedSha256;
+        obj["testing_updater_enabled"] = testingUpdateConfig.enabled;
+        obj["testing_updater_metadata_url"] = testingUpdateConfig.metadataUrl.toString();
+        obj["testing_updater_package_url"] = testingUpdateConfig.packageUrl.toString();
+        obj["testing_updater_expected_sha256"] = testingUpdateConfig.expectedSha256;
+        obj["testing_updater_prefer_prerelease"] = testingUpdateConfig.preferPrerelease;
 
         QJsonArray updateHosts;
         for (const QString& host : updateConfig.allowedHosts)
             updateHosts.append(host);
         obj["updater_allowed_hosts"] = updateHosts;
+        QJsonArray testingUpdateHosts;
+        for (const QString& host : testingUpdateConfig.allowedHosts)
+            testingUpdateHosts.append(host);
+        obj["testing_updater_allowed_hosts"] = testingUpdateHosts;
 
         QFileInfo configInfo(configPath);
         QDir().mkpath(configInfo.absolutePath());
@@ -4690,8 +4579,8 @@ QString ACS_Wynn_Builder::apGroupsConfigPath() const {
     return appDirPath;
 }
 
-bool ACS_Wynn_Builder::isTrustedUpdateUrl(const QUrl& url, const QStringList& extraAllowedHosts) const {
-    if (!updateConfig.enabled || !url.isValid())
+bool ACS_Wynn_Builder::isTrustedUpdateUrl(const UpdateSecurityConfig& config, const QUrl& url, const QStringList& extraAllowedHosts) const {
+    if (!config.enabled || !url.isValid())
         return false;
 
     if (url.scheme().compare("https", Qt::CaseInsensitive) != 0)
@@ -4701,12 +4590,12 @@ bool ACS_Wynn_Builder::isTrustedUpdateUrl(const QUrl& url, const QStringList& ex
     if (host.isEmpty())
         return false;
 
-    QStringList allowedHosts = updateConfig.allowedHosts;
+    QStringList allowedHosts = config.allowedHosts;
     allowedHosts << extraAllowedHosts;
-    if (updateConfig.metadataUrl.isValid())
-        allowedHosts << updateConfig.metadataUrl.host().trimmed().toLower();
-    if (updateConfig.packageUrl.isValid())
-        allowedHosts << updateConfig.packageUrl.host().trimmed().toLower();
+    if (config.metadataUrl.isValid())
+        allowedHosts << config.metadataUrl.host().trimmed().toLower();
+    if (config.packageUrl.isValid())
+        allowedHosts << config.packageUrl.host().trimmed().toLower();
 
     allowedHosts.removeAll(QString());
     allowedHosts.removeDuplicates();
@@ -4722,7 +4611,8 @@ bool ACS_Wynn_Builder::isTrustedUpdateUrl(const QUrl& url, const QStringList& ex
     return false;
 }
 
-bool ACS_Wynn_Builder::resolveUpdateMetadata(const QByteArray& metadataBytes,
+bool ACS_Wynn_Builder::resolveUpdateMetadata(const UpdateSecurityConfig& config,
+    const QByteArray& metadataBytes,
     QString* latestVersion,
     QUrl* packageUrl,
     QString* expectedSha256,
@@ -4731,16 +4621,15 @@ bool ACS_Wynn_Builder::resolveUpdateMetadata(const QByteArray& metadataBytes,
         return false;
 
     *latestVersion = QString::fromUtf8(metadataBytes).trimmed();
-    *packageUrl = updateConfig.packageUrl;
-    *expectedSha256 = updateConfig.expectedSha256.trimmed().toLower();
+    *packageUrl = config.packageUrl;
+    *expectedSha256 = config.expectedSha256.trimmed().toLower();
     expectedSha256->remove(QRegularExpression("\\s+"));
-    *allowedHosts = updateConfig.allowedHosts;
+    *allowedHosts = config.allowedHosts;
 
     QJsonParseError parseError;
     const QJsonDocument document = QJsonDocument::fromJson(metadataBytes, &parseError);
-    if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
-        if (latestVersion->startsWith('v', Qt::CaseInsensitive) && latestVersion->size() > 1 && latestVersion->at(1).isDigit())
-            latestVersion->remove(0, 1);
+    if (parseError.error != QJsonParseError::NoError) {
+        *latestVersion = normalizeVersionLabel(*latestVersion);
 
         if (!latestVersion->isEmpty()) {
             static const QRegularExpression githubDownloadPattern(
@@ -4749,7 +4638,7 @@ bool ACS_Wynn_Builder::resolveUpdateMetadata(const QByteArray& metadataBytes,
             if (match.hasMatch()) {
                 const QString configuredTag = match.captured(3).trimmed();
                 if (!configuredTag.isEmpty() && configuredTag != *latestVersion) {
-                    if (!fetchGithubReleaseMetadataForVersion(*latestVersion, packageUrl, expectedSha256, allowedHosts)) {
+                    if (!fetchGithubReleaseMetadataForVersion(config, *latestVersion, packageUrl, expectedSha256, allowedHosts)) {
                         *packageUrl = QUrl();
                         expectedSha256->clear();
                     }
@@ -4760,7 +4649,10 @@ bool ACS_Wynn_Builder::resolveUpdateMetadata(const QByteArray& metadataBytes,
         return !latestVersion->isEmpty();
     }
 
-    const QJsonObject obj = document.object();
+    QJsonObject obj;
+    if (!selectGithubReleaseObject(document, config.preferPrerelease, &obj))
+        return false;
+
     auto pullString = [&](const char* key) {
         return obj.value(QLatin1String(key)).toString().trimmed();
         };
@@ -4770,8 +4662,7 @@ bool ACS_Wynn_Builder::resolveUpdateMetadata(const QByteArray& metadataBytes,
         version = pullString("latest_version");
     if (version.isEmpty())
         version = pullString("tag_name");
-    if (version.startsWith('v', Qt::CaseInsensitive) && version.size() > 1 && version.at(1).isDigit())
-        version.remove(0, 1);
+    version = normalizeVersionLabel(version);
     if (!version.isEmpty())
         *latestVersion = version;
 
@@ -4790,8 +4681,8 @@ bool ACS_Wynn_Builder::resolveUpdateMetadata(const QByteArray& metadataBytes,
 
     if (packageUrlString.isEmpty()) {
         QString configuredAssetName;
-        if (updateConfig.packageUrl.isValid())
-            configuredAssetName = QFileInfo(updateConfig.packageUrl.path()).fileName().trimmed();
+        if (config.packageUrl.isValid())
+            configuredAssetName = QFileInfo(config.packageUrl.path()).fileName().trimmed();
 
         const QJsonArray assets = obj.value("assets").toArray();
         for (const QJsonValue& assetValue : assets) {
@@ -4856,7 +4747,8 @@ bool ACS_Wynn_Builder::resolveUpdateMetadata(const QByteArray& metadataBytes,
     return !latestVersion->isEmpty();
 }
 
-bool ACS_Wynn_Builder::fetchGithubReleaseMetadataForVersion(const QString& version,
+bool ACS_Wynn_Builder::fetchGithubReleaseMetadataForVersion(const UpdateSecurityConfig& config,
+    const QString& version,
     QUrl* packageUrl,
     QString* expectedSha256,
     QStringList* allowedHosts) const {
@@ -4865,7 +4757,7 @@ bool ACS_Wynn_Builder::fetchGithubReleaseMetadataForVersion(const QString& versi
 
     static const QRegularExpression githubDownloadPattern(
         "^/([^/]+)/([^/]+)/releases/download/([^/]+)/([^/]+)$");
-    const QRegularExpressionMatch match = githubDownloadPattern.match(updateConfig.packageUrl.path());
+    const QRegularExpressionMatch match = githubDownloadPattern.match(config.packageUrl.path());
     if (!match.hasMatch())
         return false;
 
@@ -4907,10 +4799,9 @@ bool ACS_Wynn_Builder::fetchGithubReleaseMetadataForVersion(const QString& versi
         QJsonParseError parseError;
         const QJsonDocument document = QJsonDocument::fromJson(reply->readAll(), &parseError);
         reply->deleteLater();
-        if (parseError.error != QJsonParseError::NoError || !document.isObject())
+        QJsonObject obj;
+        if (parseError.error != QJsonParseError::NoError || !selectGithubReleaseObject(document, config.preferPrerelease, &obj))
             return false;
-
-        const QJsonObject obj = document.object();
         const QJsonArray assets = obj.value("assets").toArray();
         for (const QJsonValue& assetValue : assets) {
             const QJsonObject asset = assetValue.toObject();
@@ -4960,15 +4851,15 @@ bool ACS_Wynn_Builder::fetchGithubReleaseMetadataForVersion(const QString& versi
 }
 
 int ACS_Wynn_Builder::compareVersionStrings(const QString& left, const QString& right) const {
-    auto normalize = [](QString version) {
-        version = version.trimmed();
-        if (version.startsWith('v', Qt::CaseInsensitive))
-            version.remove(0, 1);
-        return version;
-        };
+    const QString normalizedLeft = normalizeVersionLabel(left);
+    const QString normalizedRight = normalizeVersionLabel(right);
+    const QString leftCore = normalizedLeft.section('-', 0, 0);
+    const QString rightCore = normalizedRight.section('-', 0, 0);
+    const QString leftPrerelease = normalizedLeft.contains('-') ? normalizedLeft.section('-', 1) : QString();
+    const QString rightPrerelease = normalizedRight.contains('-') ? normalizedRight.section('-', 1) : QString();
 
-    const QStringList leftParts = normalize(left).split('.', Qt::SkipEmptyParts);
-    const QStringList rightParts = normalize(right).split('.', Qt::SkipEmptyParts);
+    const QStringList leftParts = leftCore.split('.', Qt::SkipEmptyParts);
+    const QStringList rightParts = rightCore.split('.', Qt::SkipEmptyParts);
     const int count = qMax(leftParts.size(), rightParts.size());
 
     for (int i = 0; i < count; ++i) {
@@ -4994,6 +4885,43 @@ int ACS_Wynn_Builder::compareVersionStrings(const QString& left, const QString& 
             return 1;
     }
 
+    if (leftPrerelease.isEmpty() && !rightPrerelease.isEmpty())
+        return 1;
+    if (!leftPrerelease.isEmpty() && rightPrerelease.isEmpty())
+        return -1;
+    if (!leftPrerelease.isEmpty() && !rightPrerelease.isEmpty()) {
+        const QStringList leftPreParts = splitVersionTokenParts(leftPrerelease);
+        const QStringList rightPreParts = splitVersionTokenParts(rightPrerelease);
+        const int preCount = qMax(leftPreParts.size(), rightPreParts.size());
+        for (int i = 0; i < preCount; ++i) {
+            const QString leftPart = i < leftPreParts.size() ? leftPreParts[i] : QString();
+            const QString rightPart = i < rightPreParts.size() ? rightPreParts[i] : QString();
+            bool leftOk = false;
+            bool rightOk = false;
+            const int leftValue = leftPart.toInt(&leftOk);
+            const int rightValue = rightPart.toInt(&rightOk);
+
+            if (leftOk && rightOk) {
+                if (leftValue < rightValue)
+                    return -1;
+                if (leftValue > rightValue)
+                    return 1;
+                continue;
+            }
+
+            if (leftPart.isEmpty() && !rightPart.isEmpty())
+                return -1;
+            if (!leftPart.isEmpty() && rightPart.isEmpty())
+                return 1;
+
+            const int textCompare = QString::compare(leftPart, rightPart, Qt::CaseInsensitive);
+            if (textCompare < 0)
+                return -1;
+            if (textCompare > 0)
+                return 1;
+        }
+    }
+
     return 0;
 }
 
@@ -5009,11 +4937,8 @@ QString ACS_Wynn_Builder::installedVersionLabel() const {
     if (rawVersion.isEmpty())
         return fallbackVersion;
 
-    QString normalizedVersion = rawVersion;
-    if (normalizedVersion.startsWith('v', Qt::CaseInsensitive) && normalizedVersion.size() > 1 && normalizedVersion.at(1).isDigit())
-        normalizedVersion.remove(0, 1);
-
-    const QRegularExpression versionPattern(R"(^\d+(?:\.\d+){1,3}$)");
+    const QString normalizedVersion = normalizeVersionLabel(rawVersion);
+    const QRegularExpression versionPattern(R"(^\d+(?:\.\d+){1,3}(?:-[A-Za-z0-9.-]+)?$)");
     if (!versionPattern.match(normalizedVersion).hasMatch())
         return fallbackVersion;
 
@@ -5039,51 +4964,61 @@ void ACS_Wynn_Builder::cleanupUpdateArtifacts() {
 // AUTO UPDATER
 // ====================================================
 
-void ACS_Wynn_Builder::checkForUpdates(bool interactive) {
-    updateCheckInteractive = interactive;
-    if (btnUpdateApp)
-        btnUpdateApp->setEnabled(false);
+void ACS_Wynn_Builder::checkForUpdates(bool interactive, bool testingChannel) {
+    UpdateSecurityConfig& selectedConfig = testingChannel ? testingUpdateConfig : updateConfig;
+    QPushButton* selectedButton = testingChannel ? btnTestingUpdateApp : btnUpdateApp;
+    const QString channelLabel = testingChannel ? "testing build" : "latest release";
 
-    if (!updateConfig.enabled) {
-        if (btnUpdateApp)
-            btnUpdateApp->setEnabled(true);
+    if (selectedButton)
+        selectedButton->setEnabled(false);
+
+    if (!selectedConfig.enabled) {
+        if (selectedButton)
+            selectedButton->setEnabled(true);
         if (interactive) {
             QMessageBox::information(this,
                 "Updater Disabled",
-                "The GitHub updater is currently disabled in configuration.");
+                QString("The GitHub %1 updater is currently disabled in configuration.").arg(channelLabel));
         }
         return;
     }
 
-    if (!isTrustedUpdateUrl(updateConfig.metadataUrl)) {
-        if (btnUpdateApp)
-            btnUpdateApp->setEnabled(true);
+    if (!isTrustedUpdateUrl(selectedConfig, selectedConfig.metadataUrl)) {
+        if (selectedButton)
+            selectedButton->setEnabled(true);
         if (interactive) {
             QMessageBox::warning(this,
                 "Updater Configuration Error",
-                "The release metadata URL is missing, not HTTPS, or not on the trusted host list.");
+                QString("The %1 metadata URL is missing, not HTTPS, or not on the trusted host list.").arg(channelLabel));
         } else {
-            qWarning() << "Updater disabled: metadata URL is missing, non-HTTPS, or not allow-listed.";
+            qWarning() << "Updater disabled:" << channelLabel << "metadata URL is missing, non-HTTPS, or not allow-listed.";
         }
         return;
     }
 
     if (interactive)
-        this->statusBar()->showMessage("Checking GitHub for the latest release...", 4000);
+        this->statusBar()->showMessage(
+            testingChannel ? "Checking GitHub for the latest testing build..." : "Checking GitHub for the latest release...",
+            4000);
 
-    QNetworkRequest request(updateConfig.metadataUrl);
+    QNetworkRequest request(selectedConfig.metadataUrl);
     request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
+    request.setAttribute(QNetworkRequest::User, testingChannel ? kUpdateChannelTesting : kUpdateChannelStable);
+    request.setAttribute(QNetworkRequest::UserMax, interactive);
     request.setHeader(QNetworkRequest::UserAgentHeader, "ACS Tool Updater");
     versionCheckManager->get(request);
 }
 
 void ACS_Wynn_Builder::onVersionCheckComplete(QNetworkReply* reply) {
-    const bool interactive = updateCheckInteractive;
-    updateCheckInteractive = false;
-    if (btnUpdateApp)
-        btnUpdateApp->setEnabled(true);
+    const bool testingChannel = reply->request().attribute(QNetworkRequest::User).toInt() == kUpdateChannelTesting;
+    const bool interactive = reply->request().attribute(QNetworkRequest::UserMax).toBool();
+    UpdateSecurityConfig& selectedConfig = testingChannel ? testingUpdateConfig : updateConfig;
+    QPushButton* selectedButton = testingChannel ? btnTestingUpdateApp : btnUpdateApp;
 
-    if (reply->error() != QNetworkReply::NoError || !isTrustedUpdateUrl(reply->url())) {
+    if (selectedButton)
+        selectedButton->setEnabled(true);
+
+    if (reply->error() != QNetworkReply::NoError || !isTrustedUpdateUrl(selectedConfig, reply->url())) {
         if (interactive) {
             QMessageBox::warning(this,
                 "Update Check Failed",
@@ -5100,7 +5035,7 @@ void ACS_Wynn_Builder::onVersionCheckComplete(QNetworkReply* reply) {
     QString expectedSha256;
     QStringList allowedHosts;
     const QByteArray metadataBytes = reply->readAll();
-    if (!resolveUpdateMetadata(metadataBytes, &latestVersion, &packageUrl, &expectedSha256, &allowedHosts)) {
+    if (!resolveUpdateMetadata(selectedConfig, metadataBytes, &latestVersion, &packageUrl, &expectedSha256, &allowedHosts)) {
         if (interactive) {
             QMessageBox::warning(this,
                 "Update Check Failed",
@@ -5111,15 +5046,29 @@ void ACS_Wynn_Builder::onVersionCheckComplete(QNetworkReply* reply) {
     }
 
     const QString installedVersion = installedVersionLabel();
-    if (!latestVersion.isEmpty() && compareVersionStrings(latestVersion, installedVersion) > 0) {
-        if (!isTrustedUpdateUrl(packageUrl, allowedHosts) || expectedSha256.size() != 64) {
+    const int versionCompare = compareVersionStrings(latestVersion, installedVersion);
+    const bool testingCoreMatchUpgrade =
+        testingChannel
+        && !latestVersion.isEmpty()
+        && versionCompare <= 0
+        && versionCore(latestVersion) == versionCore(installedVersion)
+        && !versionPrerelease(latestVersion).isEmpty()
+        && versionPrerelease(installedVersion).isEmpty();
+
+    if (!latestVersion.isEmpty() && (versionCompare > 0 || testingCoreMatchUpgrade)) {
+        if (!isTrustedUpdateUrl(selectedConfig, packageUrl, allowedHosts) || expectedSha256.size() != 64) {
             if (interactive) {
                 QMessageBox::warning(this,
                     "Update Check Blocked",
-                    "An update was found, but the release asset is missing a trusted HTTPS download URL or SHA-256 digest.\n\n"
-                    "Publish a release asset with a SHA-256 digest, or provide the checksum in ap_groups.json metadata.");
+                    QString("A %1 was found, but the release asset is missing a trusted HTTPS download URL or SHA-256 digest.\n\n"
+                            "Publish a release asset with a SHA-256 digest, or provide the checksum in ap_groups.json metadata.")
+                        .arg(testingChannel ? "testing build" : "release update"));
             } else {
-                this->statusBar()->showMessage("A newer release is available, but the updater could not validate it.", 5000);
+                this->statusBar()->showMessage(
+                    testingChannel
+                        ? "A newer testing build is available, but the updater could not validate it."
+                        : "A newer release is available, but the updater could not validate it.",
+                    5000);
             }
             reply->deleteLater();
             return;
@@ -5129,16 +5078,18 @@ void ACS_Wynn_Builder::onVersionCheckComplete(QNetworkReply* reply) {
         resolvedUpdatePackageUrl = packageUrl;
         resolvedUpdateSha256 = expectedSha256;
         resolvedUpdateAllowedHosts = allowedHosts;
+        resolvedUpdateChannelLabel = testingChannel ? "testing build" : "release update";
+        resolvedUpdateIsTesting = testingChannel;
 
-        if (btnUpdateApp)
-            btnUpdateApp->setText("UPDATE " + latestVersion);
+        if (selectedButton)
+            selectedButton->setText((testingChannel ? "TEST " : "UPDATE ") + latestVersion);
 
         if (interactive) {
             const QMessageBox::StandardButton response = QMessageBox::question(
                 this,
                 "Install Update",
-                QString("Current version: %1\nLatest GitHub release: %2\n\nDownload and install this update now?")
-                .arg(installedVersion, latestVersion),
+                QString("Current version: %1\nLatest GitHub %2: %3\n\nDownload and install this update now?")
+                .arg(installedVersion, testingChannel ? "testing build" : "release", latestVersion),
                 QMessageBox::Yes | QMessageBox::No,
                 QMessageBox::Yes);
             if (response == QMessageBox::Yes)
@@ -5146,26 +5097,32 @@ void ACS_Wynn_Builder::onVersionCheckComplete(QNetworkReply* reply) {
             else
                 this->statusBar()->showMessage("Update is available whenever you're ready.", 4000);
         } else {
-            this->statusBar()->showMessage("A newer release is available. Click the update button to install it.", 5000);
+            this->statusBar()->showMessage(
+                testingChannel
+                    ? "A newer testing build is available. Click TEST BUILD to install it."
+                    : "A newer release is available. Click the update button to install it.",
+                5000);
         }
 
         reply->deleteLater();
         return;
     }
 
-    if (btnUpdateApp)
-        btnUpdateApp->setText("CHECK UPDATES");
+    if (selectedButton)
+        selectedButton->setText(testingChannel ? "TEST BUILD" : "CHECK UPDATES");
     if (interactive) {
         QMessageBox::information(this,
             "Up To Date",
-            QString("This build is already current.\n\nInstalled version: %1").arg(installedVersion));
+            QString("This build is already current for the %1 channel.\n\nInstalled version: %2")
+                .arg(testingChannel ? "testing" : "stable", installedVersion));
     }
 
     reply->deleteLater();
 }
 
 void ACS_Wynn_Builder::startUpdateDownload(const QUrl& url) {
-    if (!isTrustedUpdateUrl(url, resolvedUpdateAllowedHosts)) {
+    const UpdateSecurityConfig& selectedConfig = resolvedUpdateIsTesting ? testingUpdateConfig : updateConfig;
+    if (!isTrustedUpdateUrl(selectedConfig, url, resolvedUpdateAllowedHosts)) {
         QMessageBox::warning(this, "Update Blocked",
             "The update package URL is not trusted. Only allow-listed HTTPS endpoints are permitted.");
         return;
@@ -5177,8 +5134,9 @@ void ACS_Wynn_Builder::startUpdateDownload(const QUrl& url) {
     this->statusBar()->showMessage("Downloading update package. Please wait...", 0);
     QMessageBox::information(this,
         "Updating Application",
-        QString("Version %1 is ready to install.\n\nThe application will download the release asset, close, replace the installed files, and relaunch automatically.")
-            .arg(resolvedUpdateVersion.isEmpty() ? QString("update") : resolvedUpdateVersion));
+        QString("Version %1 is ready to install as a %2.\n\nThe application will download the release asset, close, replace the installed files, and relaunch automatically.")
+            .arg(resolvedUpdateVersion.isEmpty() ? QString("update") : resolvedUpdateVersion,
+                resolvedUpdateChannelLabel.isEmpty() ? QString("build") : resolvedUpdateChannelLabel));
     QApplication::processEvents();
 
     cleanupUpdateArtifacts();
@@ -5233,7 +5191,8 @@ void ACS_Wynn_Builder::onDownloadFinished() {
     downloadFile->write(downloadReply->readAll());
     downloadFile->close();
 
-    if (downloadReply->error() != QNetworkReply::NoError || !isTrustedUpdateUrl(downloadReply->url(), resolvedUpdateAllowedHosts)) {
+    const UpdateSecurityConfig& selectedConfig = resolvedUpdateIsTesting ? testingUpdateConfig : updateConfig;
+    if (downloadReply->error() != QNetworkReply::NoError || !isTrustedUpdateUrl(selectedConfig, downloadReply->url(), resolvedUpdateAllowedHosts)) {
         QMessageBox::critical(this, "Update Failed",
             "The update download did not complete from a trusted HTTPS source.");
         QFile::remove(updateZipPath);

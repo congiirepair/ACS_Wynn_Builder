@@ -27,6 +27,7 @@
 #include <QPalette>
 #include <QTabBar>
 #include <QRegularExpression>
+#include <QSet>
 #include <QtNetwork/QNetworkAccessManager>
 #include <QtNetwork/QNetworkReply>
 #include <QtNetwork/QNetworkRequest>
@@ -78,6 +79,7 @@ struct UpdateSecurityConfig {
     QUrl packageUrl;
     QString expectedSha256;
     QStringList allowedHosts;
+    bool preferPrerelease = false;
 };
 
 struct DeploymentOptions {
@@ -350,6 +352,7 @@ private slots:
     void on_btn_check_wlan_ids_clicked();
     void handleSshLog(QString message);
     void on_btn_update_app_clicked();
+    void on_btn_testing_update_clicked();
 
     void updateLivePreview();
     void onSearchWynn(const QString& text);
@@ -433,6 +436,7 @@ private:
     // FIX (Architecture): All AP group data lives in one struct, kept private.
     ApGroupData apData;
     UpdateSecurityConfig updateConfig;
+    UpdateSecurityConfig testingUpdateConfig;
 
     // FIX (Architecture): Two separate network managers — one for version check,
     // one for file download — so onVersionCheckComplete never fires for download replies.
@@ -440,8 +444,9 @@ private:
     QNetworkAccessManager* downloadManager;
 
     QPushButton* btnUpdateApp = nullptr;
-const QString CURRENT_VERSION = "2.3.12";
-    void checkForUpdates(bool interactive = false);
+    QPushButton* btnTestingUpdateApp = nullptr;
+    const QString CURRENT_VERSION = "2.3.13";
+    void checkForUpdates(bool interactive = false, bool testingChannel = false);
     QString installedVersionLabel() const;
 
     QNetworkReply* downloadReply = nullptr;
@@ -453,7 +458,8 @@ const QString CURRENT_VERSION = "2.3.12";
     QUrl resolvedUpdatePackageUrl;
     QString resolvedUpdateSha256;
     QStringList resolvedUpdateAllowedHosts;
-    bool updateCheckInteractive = false;
+    QString resolvedUpdateChannelLabel;
+    bool resolvedUpdateIsTesting = false;
 
     QString    buildConfigScript();
     QString    buildCiscoConfigScript();
@@ -463,15 +469,17 @@ const QString CURRENT_VERSION = "2.3.12";
     QStringList getCiscoWynnApGroups() const;
     QStringList getCiscoWynnMiscGroups() const;
 
-    bool isTrustedUpdateUrl(const QUrl& url, const QStringList& extraAllowedHosts = {}) const;
+    bool isTrustedUpdateUrl(const UpdateSecurityConfig& config, const QUrl& url, const QStringList& extraAllowedHosts = {}) const;
     void cleanupUpdateArtifacts();
     QString apGroupsConfigPath() const;
-    bool resolveUpdateMetadata(const QByteArray& metadataBytes,
+    bool resolveUpdateMetadata(const UpdateSecurityConfig& config,
+        const QByteArray& metadataBytes,
         QString* latestVersion,
         QUrl* packageUrl,
         QString* expectedSha256,
         QStringList* allowedHosts) const;
-    bool fetchGithubReleaseMetadataForVersion(const QString& version,
+    bool fetchGithubReleaseMetadataForVersion(const UpdateSecurityConfig& config,
+        const QString& version,
         QUrl* packageUrl,
         QString* expectedSha256,
         QStringList* allowedHosts) const;
