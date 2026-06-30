@@ -18,14 +18,13 @@
 #include <QTcpSocket>
 #include <algorithm>
 #include <functional>
+#include <memory>
 
 QString resolveCiscoInterfaceName(const QString& selection);
 QString formatCiscoInterfaceLabel(const QString& interfaceName);
 QStringList ciscoWizardMiscGroups();
 bool ensureTrustedHost(QWidget* parent, const QString& ip, const QString& user,
     const DeploymentOptions& deployOptions, QString* errorMessage = nullptr);
-bool fetchCiscoWlanSummary(QWidget* parent, const QString& ip, const QString& user, const QString& pass,
-    QString* output, QString* errorMessage = nullptr);
 
 namespace {
 constexpr int kCiscoPromptTimeoutMs = 20000;
@@ -38,6 +37,9 @@ constexpr long kCiscoTrustCheckTimeoutSeconds = 8;
 constexpr long kCiscoSessionConnectTimeoutSeconds = 20;
 constexpr long kArubaTrustCheckTimeoutSeconds = 10;
 constexpr long kArubaSessionConnectTimeoutSeconds = 10;
+
+void applySshOptions(ssh_session session, const QString& host, const QString& user, bool isCiscoMode, long timeoutSeconds);
+void closeSshSession(ssh_session& session);
 
 QString normalizeVersionLabel(QString version)
 {
@@ -117,6 +119,131 @@ bool probeControllerEndpoint(const QString& ip, int port, int timeoutMs, QString
 
     socket.abort();
     return false;
+}
+
+struct HostTrustProbeResult
+{
+    bool trusted = false;
+    bool needsApproval = false;
+    QString errorMessage;
+    QString stateLabel;
+    QString fingerprint = "<unavailable>";
+};
+
+HostTrustProbeResult inspectTrustedHost(const QString& ip, const QString& user, const DeploymentOptions& deployOptions)
+{
+    HostTrustProbeResult result;
+
+    QString probeError;
+    if (!probeControllerEndpoint(ip, 22, kControllerTcpProbeTimeoutMs, &probeError)) {
+        result.errorMessage = probeError;
+        return result;
+    }
+
+    ssh_session session = ssh_new();
+    if (!session) {
+        result.errorMessage = "Unable to create SSH session for host trust check.";
+        return result;
+    }
+
+    const long sshTimeoutSeconds = deployOptions.useCiscoShellLogin
+        ? kCiscoTrustCheckTimeoutSeconds
+        : kArubaTrustCheckTimeoutSeconds;
+    applySshOptions(session, ip, user, deployOptions.useCiscoShellLogin, sshTimeoutSeconds);
+
+    const auto cleanupSession = [&]() {
+        closeSshSession(session);
+    };
+
+    if (ssh_connect(session) != SSH_OK) {
+        result.errorMessage = QString("Connection failed during host trust check: %1").arg(ssh_get_error(session));
+        cleanupSession();
+        return result;
+    }
+
+    const int knownState = ssh_session_is_known_server(session);
+    if (knownState == SSH_KNOWN_HOSTS_OK) {
+        result.trusted = true;
+        cleanupSession();
+        return result;
+    }
+
+    ssh_key serverKey = nullptr;
+    unsigned char* hash = nullptr;
+    size_t hashLen = 0;
+
+    if (ssh_get_server_publickey(session, &serverKey) == SSH_OK) {
+        if (ssh_get_publickey_hash(serverKey, SSH_PUBLICKEY_HASH_SHA256, &hash, &hashLen) == SSH_OK && hash && hashLen > 0)
+            result.fingerprint = QString::fromUtf8(ssh_get_fingerprint_hash(SSH_PUBLICKEY_HASH_SHA256, hash, hashLen));
+    }
+
+    switch (knownState) {
+    case SSH_KNOWN_HOSTS_CHANGED:
+        result.stateLabel = "The controller host key has changed.";
+        break;
+    case SSH_KNOWN_HOSTS_OTHER:
+        result.stateLabel = "A different host key type is already stored for this controller.";
+        break;
+    case SSH_KNOWN_HOSTS_NOT_FOUND:
+        result.stateLabel = "No known_hosts file was found for this Windows profile yet.";
+        break;
+    case SSH_KNOWN_HOSTS_UNKNOWN:
+        result.stateLabel = "This controller is not present in known_hosts.";
+        break;
+    case SSH_KNOWN_HOSTS_ERROR:
+    default:
+        result.errorMessage = QString("Unable to verify the controller host key: %1").arg(ssh_get_error(session));
+        break;
+    }
+
+    if (result.errorMessage.isEmpty())
+        result.needsApproval = true;
+
+    if (hash)
+        ssh_clean_pubkey_hash(&hash);
+    if (serverKey)
+        ssh_key_free(serverKey);
+    cleanupSession();
+    return result;
+}
+
+bool saveTrustedHost(const QString& ip, const QString& user, const DeploymentOptions& deployOptions, QString* errorMessage)
+{
+    if (errorMessage)
+        errorMessage->clear();
+
+    ssh_session session = ssh_new();
+    if (!session) {
+        if (errorMessage)
+            *errorMessage = "Unable to create SSH session for host trust acceptance.";
+        return false;
+    }
+
+    const long sshTimeoutSeconds = deployOptions.useCiscoShellLogin
+        ? kCiscoTrustCheckTimeoutSeconds
+        : kArubaTrustCheckTimeoutSeconds;
+    applySshOptions(session, ip, user, deployOptions.useCiscoShellLogin, sshTimeoutSeconds);
+
+    const auto cleanupSession = [&]() {
+        closeSshSession(session);
+    };
+
+    if (ssh_connect(session) != SSH_OK) {
+        if (errorMessage)
+            *errorMessage = QString("Connection failed while saving host trust: %1").arg(ssh_get_error(session));
+        cleanupSession();
+        return false;
+    }
+
+    if (ssh_session_update_known_hosts(session) != SSH_OK) {
+        if (errorMessage)
+            *errorMessage = QString("Failed to save trusted host key: %1").arg(ssh_get_error(session));
+        cleanupSession();
+        return false;
+    }
+
+    cleanupSession();
+    return true;
 }
 
 void applySshOptions(ssh_session session, const QString& host, const QString& user, bool isCiscoMode, long timeoutSeconds)
@@ -829,71 +956,14 @@ bool ensureTrustedHost(QWidget* parent, const QString& ip, const QString& user,
     if (errorMessage)
         errorMessage->clear();
 
-    QString probeError;
-    if (!probeControllerEndpoint(ip, 22, kControllerTcpProbeTimeoutMs, &probeError)) {
-        if (errorMessage)
-            *errorMessage = probeError;
-        return false;
-    }
-
-    ssh_session session = ssh_new();
-    if (!session) {
-        if (errorMessage)
-            *errorMessage = "Unable to create SSH session for host trust check.";
-        return false;
-    }
-
-    const long sshTimeoutSeconds = deployOptions.useCiscoShellLogin
-        ? kCiscoTrustCheckTimeoutSeconds
-        : kArubaTrustCheckTimeoutSeconds;
-    applySshOptions(session, ip, user, deployOptions.useCiscoShellLogin, sshTimeoutSeconds);
-
-    const auto cleanupSession = [&]() {
-        closeSshSession(session);
-    };
-
-    if (ssh_connect(session) != SSH_OK) {
-        if (errorMessage)
-            *errorMessage = QString("Connection failed during host trust check: %1").arg(ssh_get_error(session));
-        cleanupSession();
-        return false;
-    }
-
-    const int knownState = ssh_session_is_known_server(session);
-    if (knownState == SSH_KNOWN_HOSTS_OK) {
-        cleanupSession();
+    const HostTrustProbeResult trustResult = inspectTrustedHost(ip, user, deployOptions);
+    if (trustResult.trusted)
         return true;
-    }
 
-    ssh_key serverKey = nullptr;
-    unsigned char* hash = nullptr;
-    size_t hashLen = 0;
-    QString fingerprint = "<unavailable>";
-
-    if (ssh_get_server_publickey(session, &serverKey) == SSH_OK) {
-        if (ssh_get_publickey_hash(serverKey, SSH_PUBLICKEY_HASH_SHA256, &hash, &hashLen) == SSH_OK && hash && hashLen > 0) {
-            fingerprint = QString::fromUtf8(ssh_get_fingerprint_hash(SSH_PUBLICKEY_HASH_SHA256, hash, hashLen));
-        }
-    }
-
-    QString stateLabel;
-    switch (knownState) {
-    case SSH_KNOWN_HOSTS_CHANGED:
-        stateLabel = "The controller host key has changed.";
-        break;
-    case SSH_KNOWN_HOSTS_OTHER:
-        stateLabel = "A different host key type is already stored for this controller.";
-        break;
-    case SSH_KNOWN_HOSTS_NOT_FOUND:
-        stateLabel = "No known_hosts file was found for this Windows profile yet.";
-        break;
-    case SSH_KNOWN_HOSTS_UNKNOWN:
-        stateLabel = "This controller is not present in known_hosts.";
-        break;
-    case SSH_KNOWN_HOSTS_ERROR:
-    default:
-        stateLabel = QString("Unable to verify the controller host key: %1").arg(ssh_get_error(session));
-        break;
+    if (!trustResult.needsApproval) {
+        if (errorMessage)
+            *errorMessage = trustResult.errorMessage;
+        return false;
     }
 
     QMessageBox trustPrompt(parent);
@@ -902,7 +972,7 @@ bool ensureTrustedHost(QWidget* parent, const QString& ip, const QString& user,
     trustPrompt.setText(QString("Trust this %1 controller?").arg(deployOptions.useCiscoShellLogin ? "Cisco" : "Aruba"));
     trustPrompt.setInformativeText(
         QString("Controller: %1\nStatus: %2\nSHA-256 fingerprint: %3")
-        .arg(ip, stateLabel, fingerprint));
+        .arg(ip, trustResult.stateLabel, trustResult.fingerprint));
     QPushButton* trustButton = trustPrompt.addButton("Trust", QMessageBox::AcceptRole);
     trustPrompt.addButton(QMessageBox::Cancel);
     trustPrompt.exec();
@@ -911,52 +981,19 @@ bool ensureTrustedHost(QWidget* parent, const QString& ip, const QString& user,
     if (!accepted) {
         if (errorMessage)
             *errorMessage = "Host trust was cancelled.";
-        if (hash)
-            ssh_clean_pubkey_hash(&hash);
-        if (serverKey)
-            ssh_key_free(serverKey);
-        cleanupSession();
         return false;
     }
 
-    if (ssh_session_update_known_hosts(session) != SSH_OK) {
-        if (errorMessage)
-            *errorMessage = QString("Failed to save trusted host key: %1").arg(ssh_get_error(session));
-        if (hash)
-            ssh_clean_pubkey_hash(&hash);
-        if (serverKey)
-            ssh_key_free(serverKey);
-        cleanupSession();
-        return false;
-    }
-
-    if (hash)
-        ssh_clean_pubkey_hash(&hash);
-    if (serverKey)
-        ssh_key_free(serverKey);
-    cleanupSession();
-    return true;
+    return saveTrustedHost(ip, user, deployOptions, errorMessage);
 }
 
-bool fetchCiscoWlanSummary(QWidget* parent, const QString& ip, const QString& user, const QString& pass,
+bool fetchCiscoWlanSummaryTrusted(const QString& ip, const QString& user, const QString& pass,
     QString* output, QString* errorMessage)
 {
     if (output)
         output->clear();
     if (errorMessage)
         errorMessage->clear();
-
-    DeploymentOptions deployOptions;
-    deployOptions.sendInitialEnter = true;
-    deployOptions.useCiscoShellLogin = true;
-    deployOptions.testOnly = true;
-
-    QString trustError;
-    if (!ensureTrustedHost(parent, ip, user, deployOptions, &trustError)) {
-        if (errorMessage)
-            *errorMessage = trustError;
-        return false;
-    }
 
     ssh_session session = ssh_new();
     if (!session) {
@@ -2384,16 +2421,68 @@ WizardPageTarget::WizardPageTarget(ApGroupData data, QString explicitIp, QString
 
             btnCheckWlanIds->setEnabled(false);
             wlanSummaryOutput->setPlainText("Checking Cisco WLAN IDs...");
-            qApp->processEvents();
 
-            QString summary;
-            QString error;
-            if (fetchCiscoWlanSummary(this, ip, user, pass, &summary, &error))
-                wlanSummaryOutput->setPlainText(summary);
-            else
-                wlanSummaryOutput->setPlainText(">>> ERROR: " + error);
+            DeploymentOptions deployOptions;
+            deployOptions.sendInitialEnter = true;
+            deployOptions.useCiscoShellLogin = true;
+            deployOptions.testOnly = true;
 
-            btnCheckWlanIds->setEnabled(true);
+            auto trustResult = std::make_shared<HostTrustProbeResult>();
+            QThread* trustThread = QThread::create([trustResult, ip, user, deployOptions]() {
+                *trustResult = inspectTrustedHost(ip, user, deployOptions);
+            });
+            connect(trustThread, &QThread::finished, trustThread, &QObject::deleteLater);
+            connect(trustThread, &QThread::finished, this, [this, trustResult, ip, user, pass, deployOptions]() {
+                auto finishSummary = [this](const QString& text) {
+                    wlanSummaryOutput->setPlainText(text);
+                    btnCheckWlanIds->setEnabled(true);
+                };
+
+                if (!trustResult->errorMessage.isEmpty()) {
+                    finishSummary(">>> ERROR: " + trustResult->errorMessage);
+                    return;
+                }
+
+                if (trustResult->needsApproval) {
+                    QMessageBox trustPrompt(this);
+                    trustPrompt.setIcon(QMessageBox::Warning);
+                    trustPrompt.setWindowTitle("Trust Controller Host Key");
+                    trustPrompt.setText("Trust this Cisco controller?");
+                    trustPrompt.setInformativeText(
+                        QString("Controller: %1\nStatus: %2\nSHA-256 fingerprint: %3")
+                            .arg(ip, trustResult->stateLabel, trustResult->fingerprint));
+                    QPushButton* trustButton = trustPrompt.addButton("Trust", QMessageBox::AcceptRole);
+                    trustPrompt.addButton(QMessageBox::Cancel);
+                    trustPrompt.exec();
+
+                    if (trustPrompt.clickedButton() != trustButton) {
+                        finishSummary(">>> ERROR: Host trust was cancelled.");
+                        return;
+                    }
+
+                    QString trustError;
+                    if (!saveTrustedHost(ip, user, deployOptions, &trustError)) {
+                        finishSummary(">>> ERROR: " + trustError);
+                        return;
+                    }
+                }
+
+                auto summaryText = std::make_shared<QString>();
+                auto summaryError = std::make_shared<QString>();
+                QThread* summaryThread = QThread::create([summaryText, summaryError, ip, user, pass]() {
+                    fetchCiscoWlanSummaryTrusted(ip, user, pass, summaryText.get(), summaryError.get());
+                });
+                connect(summaryThread, &QThread::finished, summaryThread, &QObject::deleteLater);
+                connect(summaryThread, &QThread::finished, this, [this, summaryText, summaryError]() {
+                    if (!summaryError->isEmpty())
+                        wlanSummaryOutput->setPlainText(">>> ERROR: " + *summaryError);
+                    else
+                        wlanSummaryOutput->setPlainText(*summaryText);
+                    btnCheckWlanIds->setEnabled(true);
+                });
+                summaryThread->start();
+            });
+            trustThread->start();
         });
     }
     setLayout(l);
@@ -2530,6 +2619,69 @@ void WizardPage6::initializePage() {
     if (deployFinishedConnection)
         disconnect(deployFinishedConnection);
 
+    auto finishWithError = [this](const QString& message) {
+        sshLogOutput->appendPlainText(">>> ERROR: " + message);
+        deployComplete = true;
+        emit completeChanged();
+    };
+
+    auto startWorkerDeploy = [this, ip, user, pass, script]() {
+        SshWorker* worker = new SshWorker(ip, user, pass, script, deployOptions, this);
+        connect(worker, &SshWorker::updateLog, this, [this](const QString& msg) {
+            sshLogOutput->appendPlainText(msg);
+            });
+        connect(worker, &SshWorker::deployFinished, this, [this, worker]() {
+            deployComplete = true;
+            emit completeChanged();
+            worker->deleteLater();
+            });
+        worker->start();
+    };
+
+    auto runAsyncTrustPreflight = [this, ip, user, pass, script, finishWithError, startWorkerDeploy](std::function<void()> onTrusted) {
+        sshLogOutput->appendPlainText(">>> Verifying controller reachability and host trust...");
+
+        auto trustResult = std::make_shared<HostTrustProbeResult>();
+        QThread* trustThread = QThread::create([trustResult, ip, user, options = deployOptions]() {
+            *trustResult = inspectTrustedHost(ip, user, options);
+        });
+        connect(trustThread, &QThread::finished, trustThread, &QObject::deleteLater);
+        connect(trustThread, &QThread::finished, this,
+            [this, trustResult, ip, user, finishWithError, onTrusted, options = deployOptions]() {
+                if (!trustResult->errorMessage.isEmpty()) {
+                    finishWithError(trustResult->errorMessage);
+                    return;
+                }
+
+                if (trustResult->needsApproval) {
+                    QMessageBox trustPrompt(this);
+                    trustPrompt.setIcon(QMessageBox::Warning);
+                    trustPrompt.setWindowTitle("Trust Controller Host Key");
+                    trustPrompt.setText(QString("Trust this %1 controller?").arg(options.useCiscoShellLogin ? "Cisco" : "Aruba"));
+                    trustPrompt.setInformativeText(
+                        QString("Controller: %1\nStatus: %2\nSHA-256 fingerprint: %3")
+                        .arg(ip, trustResult->stateLabel, trustResult->fingerprint));
+                    QPushButton* trustButton = trustPrompt.addButton("Trust", QMessageBox::AcceptRole);
+                    trustPrompt.addButton(QMessageBox::Cancel);
+                    trustPrompt.exec();
+
+                    if (trustPrompt.clickedButton() != trustButton) {
+                        finishWithError("Host trust was cancelled.");
+                        return;
+                    }
+
+                    QString trustError;
+                    if (!saveTrustedHost(ip, user, options, &trustError)) {
+                        finishWithError(trustError);
+                        return;
+                    }
+                }
+
+                onTrusted();
+            });
+        trustThread->start();
+    };
+
     if (wizardOwner && wizardOwner->controllerSessionManager()) {
         ControllerSessionManager* manager = wizardOwner->controllerSessionManager();
         pendingScript = script;
@@ -2578,41 +2730,18 @@ void WizardPage6::initializePage() {
             return;
         }
 
-        QString trustError;
-        if (!ensureTrustedHost(this, ip, user, deployOptions, &trustError)) {
-            sshLogOutput->appendPlainText(">>> ERROR: " + trustError);
-            deployComplete = true;
-            emit completeChanged();
-            return;
-        }
-
-        waitingForPersistentConnect = true;
-        QMetaObject::invokeMethod(manager, "connectPersistent", Qt::QueuedConnection,
-            Q_ARG(QString, ip),
-            Q_ARG(QString, user),
-            Q_ARG(QString, pass),
-            Q_ARG(bool, deployOptions.useCiscoShellLogin));
+        runAsyncTrustPreflight([this, manager, ip, user, pass]() {
+            waitingForPersistentConnect = true;
+            QMetaObject::invokeMethod(manager, "connectPersistent", Qt::QueuedConnection,
+                Q_ARG(QString, ip),
+                Q_ARG(QString, user),
+                Q_ARG(QString, pass),
+                Q_ARG(bool, deployOptions.useCiscoShellLogin));
+            });
         return;
     }
 
-    QString trustError;
-    if (!ensureTrustedHost(this, ip, user, deployOptions, &trustError)) {
-        sshLogOutput->appendPlainText(">>> ERROR: " + trustError);
-        deployComplete = true;
-        emit completeChanged();
-        return;
-    }
-
-    SshWorker* worker = new SshWorker(ip, user, pass, script, deployOptions, this);
-    connect(worker, &SshWorker::updateLog, this, [this](const QString& msg) {
-        sshLogOutput->appendPlainText(msg);
-        });
-    connect(worker, &SshWorker::deployFinished, this, [this, worker]() {
-        deployComplete = true;
-        emit completeChanged();
-        worker->deleteLater();
-        });
-    worker->start();
+    runAsyncTrustPreflight(startWorkerDeploy);
 }
 
 bool WizardPage6::isComplete() const { return deployComplete; }
@@ -3322,6 +3451,10 @@ ACS_Wynn_Builder::ACS_Wynn_Builder(QWidget* parent)
 }
 
 ACS_Wynn_Builder::~ACS_Wynn_Builder() {
+    if (controllerTrustThread) {
+        controllerTrustThread->quit();
+        controllerTrustThread->wait();
+    }
     if (persistentSessionManager)
         QMetaObject::invokeMethod(persistentSessionManager, "disconnectPersistent", Qt::BlockingQueuedConnection);
     if (persistentSessionThread) {
@@ -3805,34 +3938,90 @@ void ACS_Wynn_Builder::on_btn_deploy_clicked() {
         return;
     }
 
-    QString trustError;
     DeploymentOptions deployOptions;
     deployOptions.sendInitialEnter = isCiscoMode;
     deployOptions.useCiscoShellLogin = isCiscoMode;
-    if (!ensureTrustedHost(this, ip, user, deployOptions, &trustError)) {
-        appendOutputText(">>> ERROR: " + trustError, "Deployment Console");
+
+    if (controllerTrustThread) {
+        appendOutputText(">>> ERROR: A controller trust check is already in progress.", "Deployment Console");
         ui->btn_deploy->setEnabled(true);
         ui->btn_deploy->setText("DEPLOY");
         updateCiscoConnectionUi();
-        this->statusBar()->showMessage("Deployment cancelled.", 5000);
+        this->statusBar()->showMessage("A controller preflight check is already running.", 5000);
         return;
     }
 
-    pendingPersistentDeploy = true;
-    pendingPersistentDeployIsCiscoMode = isCiscoMode;
-    pendingPersistentDeployScript = script;
-    appendOutputText(isCiscoMode
-        ? ">>> Connecting persistent Cisco session for deployment..."
-        : ">>> Connecting persistent Aruba session for deployment...",
-        "Deployment Console");
-    this->statusBar()->showMessage(
-        isCiscoMode ? "Connecting Cisco session for deployment..." : "Connecting Aruba session for deployment...",
-        10000);
-    QMetaObject::invokeMethod(persistentSessionManager, "connectPersistent", Qt::QueuedConnection,
-        Q_ARG(QString, ip),
-        Q_ARG(QString, user),
-        Q_ARG(QString, pass),
-        Q_ARG(bool, isCiscoMode));
+    ui->text_output->appendPlainText(">>> Verifying controller reachability and host trust...");
+    this->statusBar()->showMessage("Checking controller reachability and host trust...", 10000);
+
+    auto trustResult = std::make_shared<HostTrustProbeResult>();
+    controllerTrustThread = QThread::create([trustResult, ip, user, deployOptions]() {
+        *trustResult = inspectTrustedHost(ip, user, deployOptions);
+    });
+
+    QThread* trustThread = controllerTrustThread;
+    connect(trustThread, &QThread::finished, this,
+        [this, trustThread, trustResult, ip, user, pass, deployOptions, isCiscoMode, script]() {
+            if (controllerTrustThread == trustThread)
+                controllerTrustThread = nullptr;
+            trustThread->deleteLater();
+
+            auto restoreDeployUi = [this]() {
+                ui->btn_deploy->setEnabled(true);
+                ui->btn_deploy->setText("DEPLOY");
+                updateCiscoConnectionUi();
+                this->statusBar()->showMessage("Deployment cancelled.", 5000);
+            };
+
+            if (!trustResult->errorMessage.isEmpty()) {
+                appendOutputText(">>> ERROR: " + trustResult->errorMessage, "Deployment Console");
+                restoreDeployUi();
+                return;
+            }
+
+            if (trustResult->needsApproval) {
+                QMessageBox trustPrompt(this);
+                trustPrompt.setIcon(QMessageBox::Warning);
+                trustPrompt.setWindowTitle("Trust Controller Host Key");
+                trustPrompt.setText(QString("Trust this %1 controller?").arg(isCiscoMode ? "Cisco" : "Aruba"));
+                trustPrompt.setInformativeText(
+                    QString("Controller: %1\nStatus: %2\nSHA-256 fingerprint: %3")
+                        .arg(ip, trustResult->stateLabel, trustResult->fingerprint));
+                QPushButton* trustButton = trustPrompt.addButton("Trust", QMessageBox::AcceptRole);
+                trustPrompt.addButton(QMessageBox::Cancel);
+                trustPrompt.exec();
+
+                if (trustPrompt.clickedButton() != trustButton) {
+                    appendOutputText(">>> ERROR: Host trust was cancelled.", "Deployment Console");
+                    restoreDeployUi();
+                    return;
+                }
+
+                QString saveTrustError;
+                if (!saveTrustedHost(ip, user, deployOptions, &saveTrustError)) {
+                    appendOutputText(">>> ERROR: " + saveTrustError, "Deployment Console");
+                    restoreDeployUi();
+                    return;
+                }
+            }
+
+            pendingPersistentDeploy = true;
+            pendingPersistentDeployIsCiscoMode = isCiscoMode;
+            pendingPersistentDeployScript = script;
+            appendOutputText(isCiscoMode
+                ? ">>> Connecting persistent Cisco session for deployment..."
+                : ">>> Connecting persistent Aruba session for deployment...",
+                "Deployment Console");
+            this->statusBar()->showMessage(
+                isCiscoMode ? "Connecting Cisco session for deployment..." : "Connecting Aruba session for deployment...",
+                10000);
+            QMetaObject::invokeMethod(persistentSessionManager, "connectPersistent", Qt::QueuedConnection,
+                Q_ARG(QString, ip),
+                Q_ARG(QString, user),
+                Q_ARG(QString, pass),
+                Q_ARG(bool, isCiscoMode));
+        });
+    controllerTrustThread->start();
 }
 
 void ACS_Wynn_Builder::on_btn_test_ssh_clicked() {
@@ -3887,21 +4076,76 @@ void ACS_Wynn_Builder::on_btn_test_ssh_clicked() {
     deployOptions.useCiscoShellLogin = isCiscoMode;
     deployOptions.testOnly = true;
 
-    QString trustError;
-    if (!ensureTrustedHost(this, ip, user, deployOptions, &trustError)) {
-        pendingAutoCiscoWlanIdSelection = false;
-        appendOutputText(">>> ERROR: " + trustError, "Deployment Console");
+    if (controllerTrustThread) {
+        appendOutputText(">>> ERROR: A controller trust check is already in progress.", "Deployment Console");
         ui->btn_test_ssh->setEnabled(true);
         updateCiscoConnectionUi();
-        this->statusBar()->showMessage(isCiscoMode ? "Cisco connection cancelled." : "SSH test cancelled.", 5000);
+        this->statusBar()->showMessage("A controller preflight check is already running.", 5000);
         return;
     }
 
-    QMetaObject::invokeMethod(persistentSessionManager, "connectPersistent", Qt::QueuedConnection,
-        Q_ARG(QString, ip),
-        Q_ARG(QString, user),
-        Q_ARG(QString, pass),
-        Q_ARG(bool, isCiscoMode));
+    ui->text_output->appendPlainText(">>> Verifying controller reachability and host trust...");
+    this->statusBar()->showMessage("Checking controller reachability and host trust...", 10000);
+
+    auto trustResult = std::make_shared<HostTrustProbeResult>();
+    controllerTrustThread = QThread::create([trustResult, ip, user, deployOptions]() {
+        *trustResult = inspectTrustedHost(ip, user, deployOptions);
+    });
+
+    QThread* trustThread = controllerTrustThread;
+    connect(trustThread, &QThread::finished, this,
+        [this, trustThread, trustResult, ip, user, pass, deployOptions, isCiscoMode]() {
+            if (controllerTrustThread == trustThread)
+                controllerTrustThread = nullptr;
+            trustThread->deleteLater();
+
+            auto restoreConnectUi = [this, isCiscoMode]() {
+                pendingAutoCiscoWlanIdSelection = false;
+                ui->btn_test_ssh->setEnabled(true);
+                updateCiscoConnectionUi();
+                this->statusBar()->showMessage(isCiscoMode ? "Cisco connection cancelled." : "SSH test cancelled.", 5000);
+            };
+
+            if (!trustResult->errorMessage.isEmpty()) {
+                appendOutputText(">>> ERROR: " + trustResult->errorMessage, "Deployment Console");
+                restoreConnectUi();
+                return;
+            }
+
+            if (trustResult->needsApproval) {
+                QMessageBox trustPrompt(this);
+                trustPrompt.setIcon(QMessageBox::Warning);
+                trustPrompt.setWindowTitle("Trust Controller Host Key");
+                trustPrompt.setText(QString("Trust this %1 controller?").arg(isCiscoMode ? "Cisco" : "Aruba"));
+                trustPrompt.setInformativeText(
+                    QString("Controller: %1\nStatus: %2\nSHA-256 fingerprint: %3")
+                        .arg(ip, trustResult->stateLabel, trustResult->fingerprint));
+                QPushButton* trustButton = trustPrompt.addButton("Trust", QMessageBox::AcceptRole);
+                trustPrompt.addButton(QMessageBox::Cancel);
+                trustPrompt.exec();
+
+                if (trustPrompt.clickedButton() != trustButton) {
+                    appendOutputText(">>> ERROR: Host trust was cancelled.", "Deployment Console");
+                    restoreConnectUi();
+                    return;
+                }
+
+                QString trustError;
+                if (!saveTrustedHost(ip, user, deployOptions, &trustError)) {
+                    appendOutputText(">>> ERROR: " + trustError, "Deployment Console");
+                    restoreConnectUi();
+                    return;
+                }
+            }
+
+            ui->text_output->appendPlainText(">>> Controller preflight passed. Opening persistent session...");
+            QMetaObject::invokeMethod(persistentSessionManager, "connectPersistent", Qt::QueuedConnection,
+                Q_ARG(QString, ip),
+                Q_ARG(QString, user),
+                Q_ARG(QString, pass),
+                Q_ARG(bool, isCiscoMode));
+        });
+    controllerTrustThread->start();
 }
 
 void ACS_Wynn_Builder::on_btn_check_wlan_ids_clicked() {

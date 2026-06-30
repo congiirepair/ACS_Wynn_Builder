@@ -5,10 +5,11 @@ This project now supports two separate GitHub-backed update channels:
 - `stable`: normal published releases for coworkers
 - `testing`: prerelease builds for work-laptop validation
 
-The app UI keeps these separated:
+The app UI now uses a single `UPDATE APP` flow:
 
-- `UPDATE APP` checks the latest stable GitHub release
-- `TEST BUILD` checks the latest GitHub prerelease
+- it opens a chooser with the 10 most recent GitHub releases
+- each entry is labeled `latest stable`, `stable`, or `testing`
+- coworkers can install an older known-good build when needed
 
 ## Build And Package
 
@@ -70,19 +71,22 @@ Important:
 After publishing a testing prerelease, verify on the VPN-connected work laptop:
 
 1. Launch the current installed app.
-2. Click `TEST BUILD`.
-3. Confirm the app detects the prerelease version.
-4. Install the update.
-5. Reopen the app and confirm the new version from `version.txt`.
-6. Test Aruba connect/deploy behavior.
-7. Test Cisco connect, WLAN ID check, and deploy behavior.
+2. Click `UPDATE APP`.
+3. Confirm the chooser shows only the 10 most recent releases.
+4. Confirm the newest stable entry is labeled `latest stable`.
+5. Confirm prerelease entries are labeled `testing`.
+6. Install the intended update.
+7. Reopen the app and confirm the new version from `version.txt`.
+8. Test Aruba connect/deploy behavior.
+9. Test Cisco connect, WLAN ID check, and deploy behavior.
 
 After publishing a stable release, verify:
 
 1. Click `UPDATE APP`.
-2. Confirm the app detects the stable release.
-3. Install the update.
-4. Confirm coworkers would remain on the stable channel and not see testing builds.
+2. Confirm the chooser includes the new stable release within the 10 listed options.
+3. Confirm it is labeled `latest stable`.
+4. Install the update.
+5. Confirm coworkers can still choose an older stable build if they need to roll back.
 
 ## Recovery Paths
 

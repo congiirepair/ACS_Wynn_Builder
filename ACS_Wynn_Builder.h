@@ -387,6 +387,7 @@ private:
     bool pendingPersistentDeploy = false;
     bool pendingPersistentDeployIsCiscoMode = false;
     QString pendingPersistentDeployScript;
+    QThread* controllerTrustThread = nullptr;
     QThread* persistentSessionThread = nullptr;
     ControllerSessionManager* persistentSessionManager = nullptr;
     QDialog* sshSessionDialog = nullptr;
@@ -454,7 +455,7 @@ private:
     QNetworkAccessManager* downloadManager;
 
     QPushButton* btnUpdateApp = nullptr;
-    const QString CURRENT_VERSION = "2.3.15";
+    const QString CURRENT_VERSION = "2.3.16";
     void checkForUpdates(bool interactive = false, bool testingChannel = false);
     QString installedVersionLabel() const;
 
