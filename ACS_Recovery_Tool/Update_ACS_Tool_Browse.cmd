@@ -113,7 +113,7 @@ mkdir "%TEMP_ROOT%" >nul 2>nul
 
 echo Downloading latest %CHANNEL% build from GitHub...
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-  "$ProgressPreference='SilentlyContinue'; Invoke-WebRequest -UseBasicParsing -Uri '%DOWNLOAD_URL%' -OutFile '%ZIP_PATH%'"
+  "$ProgressPreference='SilentlyContinue'; Invoke-WebRequest -UseBasicParsing -TimeoutSec 30 -Uri '%DOWNLOAD_URL%' -OutFile '%ZIP_PATH%'"
 if errorlevel 1 goto :download_failed
 
 echo Extracting update package...
@@ -128,7 +128,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "$target='%TARGET_DIR%';" ^
   "$items=Get-ChildItem -LiteralPath $extract;" ^
   "$source=if($items.Count -eq 1 -and $items[0].PSIsContainer){$items[0].FullName}else{$extract};" ^
-  "Copy-Item -LiteralPath (Join-Path $source '*') -Destination $target -Recurse -Force"
+  "Get-ChildItem -LiteralPath $source -Force | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $target -Recurse -Force }"
 if errorlevel 1 goto :copy_failed
 
 echo Relaunching ACS Tool...

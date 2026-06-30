@@ -33,6 +33,8 @@ constexpr int kCiscoReadPollMs = 100;
 constexpr int kUpdateChannelStable = 0;
 constexpr int kUpdateChannelTesting = 1;
 constexpr int kControllerTcpProbeTimeoutMs = 2500;
+constexpr int kUpdateMetadataTransferTimeoutMs = 12000;
+constexpr int kUpdatePackageTransferTimeoutMs = 30000;
 constexpr qint64 kTrustedControllerPreflightCacheMs = 30000;
 constexpr long kCiscoTrustCheckTimeoutSeconds = 8;
 constexpr long kCiscoSessionConnectTimeoutSeconds = 20;
@@ -5488,6 +5490,7 @@ void ACS_Wynn_Builder::checkForUpdates(bool interactive, bool testingChannel) {
     request.setAttribute(QNetworkRequest::UserMax, interactive);
     request.setAttribute(static_cast<QNetworkRequest::Attribute>(QNetworkRequest::User + 1), showReleaseChooser);
     request.setHeader(QNetworkRequest::UserAgentHeader, "ACS Tool Updater");
+    request.setTransferTimeout(kUpdateMetadataTransferTimeoutMs);
     versionCheckManager->get(request);
 }
 
@@ -5673,6 +5676,7 @@ void ACS_Wynn_Builder::startUpdateDownload(const QUrl& url) {
     QNetworkRequest request(url);
     request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
     request.setHeader(QNetworkRequest::UserAgentHeader, "ACS Tool Updater");
+    request.setTransferTimeout(kUpdatePackageTransferTimeoutMs);
     downloadReply = downloadManager->get(request);
     connect(downloadReply, &QNetworkReply::readyRead, this, &ACS_Wynn_Builder::onDownloadReadyRead);
     connect(downloadReply, &QNetworkReply::finished, this, &ACS_Wynn_Builder::onDownloadFinished);
