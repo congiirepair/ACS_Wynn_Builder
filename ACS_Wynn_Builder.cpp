@@ -1899,6 +1899,11 @@ void ControllerSessionManager::deployPersistentInternal(QString script, bool all
         const QString controllerLabel = reconnectCiscoMode ? "Cisco" : "Aruba";
 
         emit logMessage(">>> " + controllerLabel + " session is stale. Reconnecting and retrying deployment...");
+        QString probeError;
+        if (!probeControllerEndpoint(reconnectIp, 22, kControllerTcpProbeTimeoutMs, &probeError)) {
+            emit logMessage(">>> ERROR: " + probeError);
+            return false;
+        }
         closeSession();
         emit connectionStateChanged(false, reconnectCiscoMode, QString(), QString());
         connectPersistent(reconnectIp, reconnectUser, reconnectPassword, reconnectCiscoMode);
@@ -1949,6 +1954,12 @@ void ControllerSessionManager::deployPersistentInternal(QString script, bool all
         const bool reconnectCiscoMode = currentCiscoMode;
 
         emit logMessage(">>> " + controllerLabel + " shell closed after deployment. Reconnecting persistent session...");
+        QString probeError;
+        if (!probeControllerEndpoint(reconnectIp, 22, kControllerTcpProbeTimeoutMs, &probeError)) {
+            emit logMessage(">>> ERROR: " + probeError);
+            emit deployFinished(false, controllerLabel + " deployment completed, but the controller could not be reached to restore the session.");
+            return;
+        }
         connectPersistent(reconnectIp, reconnectUser, reconnectPassword, reconnectCiscoMode);
 
         if (connected && currentIp == reconnectIp && currentUser == reconnectUser && currentCiscoMode == reconnectCiscoMode) {
@@ -1980,6 +1991,11 @@ void ControllerSessionManager::checkWlanIdsPersistentInternal(bool allowReconnec
         const bool reconnectCiscoMode = currentCiscoMode;
 
         emit logMessage(">>> Cisco session dropped during WLAN ID check. Attempting automatic reconnect...");
+        QString probeError;
+        if (!probeControllerEndpoint(reconnectIp, 22, kControllerTcpProbeTimeoutMs, &probeError)) {
+            emit logMessage(">>> ERROR: " + probeError);
+            return false;
+        }
         closeSession();
         emit connectionStateChanged(false, reconnectCiscoMode, QString(), QString());
         connectPersistent(reconnectIp, reconnectUser, reconnectPassword, reconnectCiscoMode);
