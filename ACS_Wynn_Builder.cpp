@@ -3997,7 +3997,7 @@ void ACS_Wynn_Builder::on_btn_deploy_clicked() {
         return;
     }
 
-    QString ip = ui->entry_ip->text();
+    QString ip = isCiscoMode ? ui->entry_ip->text().trimmed() : currentArubaControllerIp();
     QString user = ui->entry_user->text().trimmed();
     QString pass = ui->entry_ssh_pass->text();
     if (!hasReusableSession && isCiscoMode && user.isEmpty()) {
@@ -4041,6 +4041,15 @@ void ACS_Wynn_Builder::on_btn_deploy_clicked() {
         this->statusBar()->showMessage("Connect to Cisco before deploying.", 5000);
         return;
     }
+
+    if (ui->entry_ip && ui->entry_ip->text().trimmed() != ip)
+        ui->entry_ip->setText(ip);
+    if (ui->entry_path && ui->entry_path->text().trimmed() != currentArubaConfigPath())
+        ui->entry_path->setText(currentArubaConfigPath());
+    appendOutputText(
+        QString(">>> Aruba site target resolved from the active tab: %1 (%2)")
+            .arg(ui->siteTabs && ui->siteTabs->currentIndex() == 0 ? "Wynn & Encore" : "Stations Casinos", ip),
+        "Deployment Console");
 
     DeploymentOptions deployOptions;
     deployOptions.sendInitialEnter = isCiscoMode;
@@ -4527,8 +4536,9 @@ void ACS_Wynn_Builder::on_btn_wizard_clicked() {
     wizard.addPage(p5);
     wizard.addPage(new WizardPage6(p5->configPreview, this));
 
+    syncArubaTargetFields();
     wizard.setField("site", ui->siteTabs->currentIndex());
-    wizard.setField("ip", ui->entry_ip->text());
+    wizard.setField("ip", currentArubaControllerIp());
     wizard.setField("user", ui->entry_user->text().trimmed());
     wizard.setField("pass", ui->entry_ssh_pass->text());
 
@@ -4579,6 +4589,24 @@ void ACS_Wynn_Builder::on_siteTabs_currentChanged(int index) {
     if (!modeTabs || modeTabs->currentIndex() == 0)
         updateLivePreview();
     refreshWorkspaceSummary();
+}
+
+QString ACS_Wynn_Builder::currentArubaControllerIp() const {
+    const bool isWynnSite = ui->siteTabs && ui->siteTabs->currentIndex() == 0;
+    return isWynnSite ? apData.wynnControllerIp : apData.stationsControllerIp;
+}
+
+QString ACS_Wynn_Builder::currentArubaConfigPath() const {
+    const bool isWynnSite = ui->siteTabs && ui->siteTabs->currentIndex() == 0;
+    return isWynnSite ? apData.wynnConfigPath : apData.stationsConfigPath;
+}
+
+void ACS_Wynn_Builder::syncArubaTargetFields() {
+    if (!ui || !ui->entry_ip || !ui->entry_path)
+        return;
+
+    ui->entry_ip->setText(currentArubaControllerIp());
+    ui->entry_path->setText(currentArubaConfigPath());
 }
 
 void ACS_Wynn_Builder::syncModeUi() {
@@ -4659,6 +4687,7 @@ void ACS_Wynn_Builder::syncModeUi() {
     }
     else {
         ui->entry_ip->setReadOnly(false);
+        syncArubaTargetFields();
         on_siteTabs_currentChanged(ui->siteTabs->currentIndex());
         if (profilePresetFrame)
             profilePresetFrame->hide();

@@ -454,7 +454,7 @@ private:
     QNetworkAccessManager* downloadManager;
 
     QPushButton* btnUpdateApp = nullptr;
-    const QString CURRENT_VERSION = "2.3.20";
+    const QString CURRENT_VERSION = "2.3.21";
     void checkForUpdates(bool interactive = false, bool testingChannel = false);
     QString installedVersionLabel() const;
 
@@ -498,6 +498,9 @@ private:
     bool promptForReleaseSelection(const QList<UpdateReleaseOption>& releases, const QString& installedVersion, bool preferTestingChannel);
     int compareVersionStrings(const QString& left, const QString& right) const;
     void refreshWorkspaceSummary();
+    QString currentArubaControllerIp() const;
+    QString currentArubaConfigPath() const;
+    void syncArubaTargetFields();
     void syncModeUi();
     void loadApGroupsFromJson();
     void populateTree(QTreeWidget* tree, int siteIndex);
