@@ -70,9 +70,10 @@ QString versionPrerelease(const QString& version)
     return normalized.contains('-') ? normalized.section('-', 1) : QString();
 }
 
-int commandMaxWaitMs(const QString& rawLine)
+int commandMaxWaitMs(const QString& rawLine, const QString& previousRawLine = QString())
 {
     const QString line = rawLine.trimmed().toLower();
+    const QString previousLine = previousRawLine.trimmed().toLower();
     if (line.isEmpty())
         return 2000;
 
@@ -80,6 +81,12 @@ int commandMaxWaitMs(const QString& rawLine)
         || line == "write memory"
         || line == "save config"
         || line.startsWith("copy running-config startup-config")) {
+        return 15000;
+    }
+
+    if (line == "y"
+        && (previousLine == "save config"
+            || previousLine.startsWith("copy running-config startup-config"))) {
         return 15000;
     }
 
@@ -1793,6 +1800,7 @@ void SshWorker::run() {
     QString cleanScript = configScript;
     cleanScript.replace("\r\n", "\n");
     QStringList lines = cleanScript.split('\n', Qt::SkipEmptyParts);
+    QString previousLine;
 
     for (const QString& line : lines) {
         const QByteArray payload = (line + "\n").toUtf8();
@@ -1806,11 +1814,12 @@ void SshWorker::run() {
         }
 
         // Wait for the controller to go quiet before sending the next line.
-        const int maxWaitMs = commandMaxWaitMs(line);
+        const int maxWaitMs = commandMaxWaitMs(line, previousLine);
         if (!drainUntilQuiet(250, maxWaitMs)) {
             emit updateLog(QString(">>> WARNING: Controller stayed busy longer than expected after '%1'. Continuing with the next command.")
                 .arg(line));
         }
+        previousLine = line;
     }
 
     // Final drain after the last command: only report completion once the
@@ -1996,6 +2005,7 @@ void ControllerSessionManager::deployPersistentInternal(QString script, bool all
     cleanScript.replace("\r\n", "\n");
     const QStringList lines = cleanScript.split('\n', Qt::SkipEmptyParts);
     QString shellOutput;
+    QString previousLine;
     waitForShellQuiet(channel, readBuf, sizeof(readBuf), 250, 1500, &shellOutput, emitChunk);
     for (const QString& line : lines) {
         const QByteArray payload = (line + "\n").toUtf8();
@@ -2009,11 +2019,12 @@ void ControllerSessionManager::deployPersistentInternal(QString script, bool all
             return;
         }
 
-        const int maxWaitMs = commandMaxWaitMs(line);
+        const int maxWaitMs = commandMaxWaitMs(line, previousLine);
         if (!waitForShellQuiet(channel, readBuf, sizeof(readBuf), 250, maxWaitMs, &shellOutput, emitChunk)) {
             emit logMessage(QString(">>> WARNING: Controller stayed busy longer than expected after '%1'. Continuing with the next command.")
                 .arg(line));
         }
+        previousLine = line;
     }
 
     waitForShellQuiet(channel, readBuf, sizeof(readBuf), 1200, 10000, &shellOutput, emitChunk);
