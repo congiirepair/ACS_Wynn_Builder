@@ -7,34 +7,18 @@ set "TEMP_ROOT=%TEMP%\ACS_Tool_Updater"
 set "ZIP_PATH=%TEMP_ROOT%\%ASSET_NAME%"
 set "EXTRACT_PATH=%TEMP_ROOT%\extract"
 set "VERSION_PATH=%TARGET_DIR%\version.txt"
-set "CHANNEL=stable"
-set "RELEASE_API="
-set "DOWNLOAD_URL="
+set "RELEASE_API=https://api.github.com/repos/%REPOSITORY%/releases/latest"
+set "DOWNLOAD_URL=https://github.com/%REPOSITORY%/releases/latest/download/%ASSET_NAME%"
 
 echo.
 echo ACS Tool Updater
 echo.
-if /I "%~1"=="testing" set "CHANNEL=testing"
-if /I "%~1"=="stable" set "CHANNEL=stable"
-if /I "%CHANNEL%"=="testing" (
-    set "RELEASE_API=https://api.github.com/repos/%REPOSITORY%/releases"
-) else (
-    set "RELEASE_API=https://api.github.com/repos/%REPOSITORY%/releases/latest"
-    set "DOWNLOAD_URL=https://github.com/%REPOSITORY%/releases/latest/download/%ASSET_NAME%"
-)
-
-if /I not "%~1"=="stable" if /I not "%~1"=="testing" if not "%~1"=="" (
-    echo Unknown channel "%~1". Use "stable" or "testing".
+if not "%~1"=="" (
+    echo This updater no longer takes a channel argument.
+    echo It always installs the latest stable GitHub release.
     echo.
     pause
     exit /b 1
-)
-
-if "%~1"=="" (
-    choice /C ST /N /M "Press S for stable release or T for testing build: "
-    if errorlevel 2 set "CHANNEL=testing"
-    if errorlevel 1 if not errorlevel 2 set "CHANNEL=stable"
-    if /I "%CHANNEL%"=="testing" set "RELEASE_API=https://api.github.com/repos/%REPOSITORY%/releases"
 )
 
 echo Select the existing ACS Tool install folder when prompted.
@@ -68,7 +52,6 @@ if exist "%TARGET_DIR%\version.txt" (
 for /f "usebackq delims=" %%I in (`powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "$ProgressPreference='SilentlyContinue';" ^
   "$release = Invoke-RestMethod -UseBasicParsing -Uri '%RELEASE_API%';" ^
-  "if ('%CHANNEL%' -eq 'testing') { $release = $release | Where-Object { -not $_.draft -and $_.prerelease } | Select-Object -First 1 };" ^
   "if (-not $release) { exit 3 };" ^
   "$tag = [string]$release.tag_name;" ^
   "if ($tag.StartsWith('v')) { $tag = $tag.Substring(1) };" ^
@@ -85,21 +68,21 @@ for /f "usebackq delims=" %%I in (`powershell -NoProfile -ExecutionPolicy Bypass
 )
 
 if not defined LATEST_VERSION (
-    echo Could not determine the latest GitHub %CHANNEL% version.
+    echo Could not determine the latest stable GitHub version.
     echo.
     pause
     exit /b 1
 )
 
 if not defined DOWNLOAD_URL (
-    echo Could not determine the GitHub download URL for the %CHANNEL% channel.
+    echo Could not determine the GitHub download URL for the latest stable release.
     echo.
     pause
     exit /b 1
 )
 
 if defined LOCAL_VERSION if /I "%LOCAL_VERSION%"=="%LATEST_VERSION%" (
-    echo ACS Tool is already up to date with %CHANNEL% version %LOCAL_VERSION%.
+    echo ACS Tool is already up to date with stable version %LOCAL_VERSION%.
     echo.
     pause
     exit /b 0
@@ -112,7 +95,7 @@ timeout /t 2 /nobreak >nul
 if exist "%TEMP_ROOT%" rmdir /s /q "%TEMP_ROOT%" >nul 2>nul
 mkdir "%TEMP_ROOT%" >nul 2>nul
 
-echo Downloading latest %CHANNEL% build from GitHub...
+echo Downloading latest stable build from GitHub...
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "$ProgressPreference='SilentlyContinue'; Invoke-WebRequest -UseBasicParsing -TimeoutSec 30 -Uri '%DOWNLOAD_URL%' -OutFile '%ZIP_PATH%'"
 if errorlevel 1 goto :download_failed

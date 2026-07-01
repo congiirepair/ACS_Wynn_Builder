@@ -23,11 +23,6 @@ namespace {
     const wchar_t* kRepositoryName = L"ACS_Wynn_Builder";
     const wchar_t* kAssetName = L"ACS_Wynn_Builder_Update.zip";
 
-    enum class UpdateChannel {
-        Stable,
-        Testing
-    };
-
     class ScopedProgressDialog {
     public:
         ScopedProgressDialog() = default;
@@ -328,14 +323,11 @@ namespace {
         return value.substr(first, last - first + 1);
     }
 
-    std::optional<std::pair<std::wstring, std::wstring>> resolveGithubDownload(UpdateChannel channel) {
+    std::optional<std::pair<std::wstring, std::wstring>> resolveGithubDownload() {
         std::wstringstream script;
         script << L"$ProgressPreference='SilentlyContinue';"
                << L"$repo='https://api.github.com/repos/" << kRepositoryOwner << L"/" << kRepositoryName << L"';";
-        if (channel == UpdateChannel::Testing)
-            script << L"$release=Invoke-RestMethod -UseBasicParsing -Uri ($repo + '/releases') | Where-Object { -not $_.draft -and $_.prerelease } | Select-Object -First 1;";
-        else
-            script << L"$release=Invoke-RestMethod -UseBasicParsing -Uri ($repo + '/releases/latest');";
+        script << L"$release=Invoke-RestMethod -UseBasicParsing -Uri ($repo + '/releases/latest');";
         script << L"if(-not $release){exit 3};"
                << L"$tag=[string]$release.tag_name;"
                << L"if($tag.StartsWith('v')){$tag=$tag.Substring(1)};"
@@ -395,22 +387,9 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         return 0;
     }
 
-    const int channelChoice = MessageBoxW(nullptr,
-        L"Choose which GitHub channel to recover from.\n\n"
-        L"Yes = Stable release\n"
-        L"No = Testing build\n"
-        L"Cancel = Stop",
-        L"ACS Recovery Tool",
-        MB_YESNOCANCEL | MB_ICONQUESTION);
-    if (channelChoice == IDCANCEL) {
-        CoUninitialize();
-        return 0;
-    }
-
-    const UpdateChannel channel = channelChoice == IDNO ? UpdateChannel::Testing : UpdateChannel::Stable;
-    const auto downloadInfo = resolveGithubDownload(channel);
+    const auto downloadInfo = resolveGithubDownload();
     if (!downloadInfo) {
-        showMessage(L"The recovery tool could not resolve the selected GitHub build.",
+        showMessage(L"The recovery tool could not resolve the latest stable GitHub build.",
             L"ACS Recovery Tool", MB_OK | MB_ICONERROR);
         CoUninitialize();
         return 1;
@@ -432,9 +411,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         return 1;
     }
 
-    const std::wstring channelLabel = channel == UpdateChannel::Testing ? L"testing build" : L"stable release";
     progress.setStage(L"Downloading the selected recovery package from GitHub...", 10);
-    progress.setDetail(L"Downloading " + std::wstring(kAssetName) + L" (" + channelLabel + L")");
+    progress.setDetail(L"Downloading " + std::wstring(kAssetName) + L" (latest stable)");
     if (FAILED(URLDownloadToFileW(nullptr, downloadInfo->second.c_str(), zipPath.c_str(), 0, nullptr))) {
         showMessage(L"The recovery tool could not download the selected package from GitHub.",
             L"ACS Recovery Tool", MB_OK | MB_ICONERROR);
