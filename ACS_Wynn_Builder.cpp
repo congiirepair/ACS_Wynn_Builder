@@ -793,7 +793,6 @@ QString buildArubaConfig(const QString& ssid,
 
     config << "end";
     config << "configuration commit";
-    config << "configuration commit";
     config << "write memory";
 
     return config.join("\n");
