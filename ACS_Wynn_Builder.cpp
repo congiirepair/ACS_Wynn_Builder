@@ -70,6 +70,22 @@ QString versionPrerelease(const QString& version)
     return normalized.contains('-') ? normalized.section('-', 1) : QString();
 }
 
+int commandMaxWaitMs(const QString& rawLine)
+{
+    const QString line = rawLine.trimmed().toLower();
+    if (line.isEmpty())
+        return 2000;
+
+    if (line == "configuration commit"
+        || line == "write memory"
+        || line == "save config"
+        || line.startsWith("copy running-config startup-config")) {
+        return 15000;
+    }
+
+    return 2000;
+}
+
 struct ControllerPreflightCacheEntry
 {
     QString ip;
@@ -1791,7 +1807,11 @@ void SshWorker::run() {
         }
 
         // Wait for the controller to go quiet before sending the next line.
-        drainUntilQuiet(250, 2000);
+        const int maxWaitMs = commandMaxWaitMs(line);
+        if (!drainUntilQuiet(250, maxWaitMs)) {
+            emit updateLog(QString(">>> WARNING: Controller stayed busy longer than expected after '%1'. Continuing with the next command.")
+                .arg(line));
+        }
     }
 
     // Final drain after the last command: only report completion once the
@@ -1990,7 +2010,11 @@ void ControllerSessionManager::deployPersistentInternal(QString script, bool all
             return;
         }
 
-        waitForShellQuiet(channel, readBuf, sizeof(readBuf), 250, 2000, &shellOutput, emitChunk);
+        const int maxWaitMs = commandMaxWaitMs(line);
+        if (!waitForShellQuiet(channel, readBuf, sizeof(readBuf), 250, maxWaitMs, &shellOutput, emitChunk)) {
+            emit logMessage(QString(">>> WARNING: Controller stayed busy longer than expected after '%1'. Continuing with the next command.")
+                .arg(line));
+        }
     }
 
     waitForShellQuiet(channel, readBuf, sizeof(readBuf), 1200, 10000, &shellOutput, emitChunk);
