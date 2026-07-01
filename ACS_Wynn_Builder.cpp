@@ -30,6 +30,8 @@ namespace {
 constexpr int kCiscoPromptTimeoutMs = 20000;
 constexpr int kCiscoQuietWindowMs = 1200;
 constexpr int kCiscoReadPollMs = 100;
+constexpr int kCiscoLoginRetryTimeoutMs = 3000;
+constexpr int kCiscoLoginOverallTimeoutMs = 15000;
 constexpr int kUpdateChannelStable = 0;
 constexpr int kUpdateChannelTesting = 1;
 constexpr int kControllerTcpProbeTimeoutMs = 2500;
@@ -438,25 +440,53 @@ bool completeCiscoShellLogin(ssh_channel channel,
     int readBufSize,
     QString* errorMessage = nullptr,
     std::function<void(const QString&)> onChunk = {},
-    std::function<void(const QString&)> onLog = {})
+    std::function<void(const QString&)> onLog = {},
+    int overallTimeoutMs = kCiscoLoginOverallTimeoutMs)
 {
     auto log = [&](const QString& message) {
         if (onLog)
             onLog(message);
     };
 
+    QElapsedTimer loginTimer;
+    loginTimer.start();
+    auto remainingLoginBudget = [&]() {
+        return overallTimeoutMs - static_cast<int>(loginTimer.elapsed());
+    };
+    auto failIfOutOfBudget = [&](const QString& stageLabel) {
+        if (remainingLoginBudget() > 0)
+            return false;
+
+        if (errorMessage)
+            *errorMessage = QString("Timed out during %1. The Cisco controller did not finish shell login before the safety deadline.")
+                .arg(stageLabel);
+        return true;
+    };
+
     auto waitForCiscoPrompt = [&](const QStringList& prompts, const QString& stageLabel, QString* transcript) {
-        if (waitForPrompt(channel, readBuf, readBufSize, prompts, kCiscoPromptTimeoutMs, transcript, errorMessage, stageLabel, onChunk))
+        if (failIfOutOfBudget(stageLabel))
+            return false;
+
+        const int firstAttemptTimeout = qMin(kCiscoPromptTimeoutMs, remainingLoginBudget());
+        if (waitForPrompt(channel, readBuf, readBufSize, prompts, firstAttemptTimeout, transcript, errorMessage, stageLabel, onChunk))
             return true;
 
+        if (failIfOutOfBudget(stageLabel + " retry"))
+            return false;
         log(">>> Cisco shell login: no prompt detected, sending another Enter...");
         writeShellLine(channel, QString());
-        if (waitForPrompt(channel, readBuf, readBufSize, prompts, kCiscoPromptTimeoutMs, transcript, errorMessage, stageLabel + " retry", onChunk))
+        const int retryTimeout = qMin(kCiscoLoginRetryTimeoutMs, remainingLoginBudget());
+        if (retryTimeout > 0
+            && waitForPrompt(channel, readBuf, readBufSize, prompts, retryTimeout, transcript, errorMessage, stageLabel + " retry", onChunk))
             return true;
 
+        if (failIfOutOfBudget(stageLabel + " final retry"))
+            return false;
         log(">>> Cisco shell login: still waiting, sending one final Enter...");
         writeShellLine(channel, QString());
-        return waitForPrompt(channel, readBuf, readBufSize, prompts, kCiscoPromptTimeoutMs, transcript, errorMessage, stageLabel + " final retry", onChunk);
+        const int finalRetryTimeout = qMin(kCiscoLoginRetryTimeoutMs, remainingLoginBudget());
+        return finalRetryTimeout > 0
+            && waitForPrompt(channel, readBuf, readBufSize, prompts, finalRetryTimeout, transcript, errorMessage, stageLabel + " final retry", onChunk);
     };
 
     ssh_channel_write(channel, "\n", 1);
@@ -498,7 +528,10 @@ bool completeCiscoShellLogin(ssh_channel channel,
         log(">>> Cisco shell login: sending password...");
         writeShellLine(channel, pass);
         transcript.clear();
-        if (!waitForPrompt(channel, readBuf, readBufSize, { ">", "#", "save config", "config wlan" }, kCiscoPromptTimeoutMs, &transcript, errorMessage, "password submission", onChunk))
+        if (failIfOutOfBudget("password submission"))
+            return false;
+        const int passwordTimeout = qMin(kCiscoPromptTimeoutMs, remainingLoginBudget());
+        if (!waitForPrompt(channel, readBuf, readBufSize, { ">", "#", "save config", "config wlan" }, passwordTimeout, &transcript, errorMessage, "password submission", onChunk))
             return false;
     }
 
@@ -1787,10 +1820,11 @@ void ControllerSessionManager::closeSession() {
 }
 
 void ControllerSessionManager::disconnectPersistent() {
+    const bool previousCiscoMode = currentCiscoMode;
     if (connected)
         emit logMessage(">>> Controller session disconnected.");
     closeSession();
-    emit connectionStateChanged(false, currentCiscoMode, QString(), QString());
+    emit connectionStateChanged(false, previousCiscoMode, QString(), QString());
 }
 
 void ControllerSessionManager::connectPersistent(QString ip, QString user, QString pass, bool isCiscoMode) {
@@ -1804,6 +1838,13 @@ void ControllerSessionManager::connectPersistent(QString ip, QString user, QStri
 
     const QString controllerLabel = isCiscoMode ? "Cisco" : "Aruba";
     emit logMessage(">>> Connecting persistent " + controllerLabel + " session to " + ip + "...");
+
+    QString probeError;
+    if (!probeControllerEndpoint(ip, 22, kControllerTcpProbeTimeoutMs, &probeError)) {
+        emit connectFinished(false, probeError);
+        emit connectionStateChanged(false, isCiscoMode, QString(), QString());
+        return;
+    }
 
     session = ssh_new();
     if (!session) {
@@ -1954,6 +1995,8 @@ void ControllerSessionManager::deployPersistentInternal(QString script, bool all
         const bool reconnectCiscoMode = currentCiscoMode;
 
         emit logMessage(">>> " + controllerLabel + " shell closed after deployment. Reconnecting persistent session...");
+        closeSession();
+        emit connectionStateChanged(false, reconnectCiscoMode, QString(), QString());
         QString probeError;
         if (!probeControllerEndpoint(reconnectIp, 22, kControllerTcpProbeTimeoutMs, &probeError)) {
             emit logMessage(">>> ERROR: " + probeError);
@@ -1993,6 +2036,8 @@ void ControllerSessionManager::checkWlanIdsPersistentInternal(bool allowReconnec
         emit logMessage(">>> Cisco session dropped during WLAN ID check. Attempting automatic reconnect...");
         QString probeError;
         if (!probeControllerEndpoint(reconnectIp, 22, kControllerTcpProbeTimeoutMs, &probeError)) {
+            closeSession();
+            emit connectionStateChanged(false, reconnectCiscoMode, QString(), QString());
             emit logMessage(">>> ERROR: " + probeError);
             return false;
         }
@@ -3407,9 +3452,15 @@ ACS_Wynn_Builder::ACS_Wynn_Builder(QWidget* parent)
         [this](bool success, const QString& message) {
             ui->btn_test_ssh->setEnabled(true);
             if (!success) {
+                const bool wasWaitingToDeploy = pendingPersistentDeploy;
                 pendingAutoCiscoWlanIdSelection = false;
                 pendingPersistentDeploy = false;
+                pendingPersistentDeployIsCiscoMode = false;
                 pendingPersistentDeployScript.clear();
+                if (wasWaitingToDeploy) {
+                    ui->btn_deploy->setEnabled(true);
+                    ui->btn_deploy->setText("DEPLOY");
+                }
                 appendOutputText(">>> ERROR: " + message, "Deployment Console");
             }
             else if (pendingPersistentDeploy && ciscoSessionIsCiscoMode == pendingPersistentDeployIsCiscoMode) {
