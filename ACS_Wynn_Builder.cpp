@@ -1085,6 +1085,13 @@ bool fetchCiscoWlanSummaryTrusted(const QString& ip, const QString& user, const 
     if (errorMessage)
         errorMessage->clear();
 
+    QString probeError;
+    if (!probeControllerEndpoint(ip, 22, kControllerTcpProbeTimeoutMs, &probeError)) {
+        if (errorMessage)
+            *errorMessage = probeError;
+        return false;
+    }
+
     ssh_session session = ssh_new();
     if (!session) {
         if (errorMessage)
