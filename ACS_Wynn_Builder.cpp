@@ -6454,8 +6454,29 @@ QList<UpdateReleaseOption> ACS_Wynn_Builder::buildReleaseOptions(const QByteArra
         return QString::compare(left.publishedLabel, right.publishedLabel, Qt::CaseInsensitive) > 0;
         });
 
-    if (releases.size() > 10)
-        releases = releases.mid(0, 10);
+    if (releases.size() > 10) {
+        // The sorted list is partitioned: non-testing entries first (latest stable at
+        // the top), then testing entries. A plain truncation to 10 would hide every
+        // prerelease as soon as 10 or more stable releases exist, so reserve up to two
+        // of the ten slots for the newest testing builds.
+        int stableCount = 0;
+        while (stableCount < releases.size() && !releases.at(stableCount).isTesting)
+            ++stableCount;
+
+        const int testingCount = releases.size() - stableCount;
+        const int reservedTestingSlots = qMin(2, testingCount);
+        const int stableTake = qMin(stableCount, 10 - reservedTestingSlots);
+        const int testingTake = qMin(testingCount, 10 - stableTake);
+
+        QList<UpdateReleaseOption> trimmed;
+        trimmed.reserve(stableTake + testingTake);
+        for (int i = 0; i < stableTake; ++i)
+            trimmed.append(releases.at(i));
+        for (int i = 0; i < testingTake; ++i)
+            trimmed.append(releases.at(stableCount + i));
+
+        releases = trimmed;
+    }
 
     return releases;
 }

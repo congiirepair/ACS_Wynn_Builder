@@ -7,9 +7,18 @@ This project now supports two separate GitHub-backed update channels:
 
 The app UI now uses a single `UPDATE APP` flow:
 
-- it opens a chooser with the 10 most recent GitHub releases
+- it opens a chooser with up to 10 GitHub releases
 - each entry is labeled `latest stable`, `stable`, or `testing`
 - coworkers can install an older known-good build when needed
+
+Chooser slot rules (2.4.0 and newer):
+
+- entries are sorted latest stable first, then remaining stables, then testing builds
+- when more than 10 releases exist, up to 2 of the 10 slots are reserved for the
+  newest testing prereleases, so a prerelease stays visible no matter how many
+  stable releases have accumulated
+- builds before 2.4.0 truncated to the first 10 entries after sorting, which hid
+  every prerelease once 10 or more stable releases existed
 
 ## Build And Package
 
@@ -72,7 +81,7 @@ After publishing a testing prerelease, verify on the VPN-connected work laptop:
 
 1. Launch the current installed app.
 2. Click `UPDATE APP`.
-3. Confirm the chooser shows only the 10 most recent releases.
+3. Confirm the chooser shows at most 10 releases.
 4. Confirm the newest stable entry is labeled `latest stable`.
 5. Confirm prerelease entries are labeled `testing`.
 6. Install the intended update.
@@ -90,13 +99,16 @@ After publishing a stable release, verify:
 
 ## Recovery Paths
 
-The recovery helpers now support both channels:
+The recovery helpers install the latest stable release only:
 
 - `ACS_Recovery_Tool.exe`
 - `Update_ACS_Tool.cmd`
 - `Update_ACS_Tool_Browse.cmd`
 
-Each now allows choosing `stable` or `testing` instead of forcing only the latest public release.
+They all request the GitHub `/releases/latest` endpoint, which never returns a
+prerelease. There is no channel selection in these tools. To install a testing
+build, use the in-app `UPDATE APP` chooser, or download the prerelease asset
+manually and point `Update_ACS_Tool_Browse.cmd` at the downloaded package.
 
 ## Version Guidance
 
