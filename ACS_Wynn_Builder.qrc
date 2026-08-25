@@ -2,5 +2,7 @@
     <qresource prefix="/">
 		<file alias="splash.png">splash.jpg</file>
 		<file>logo.png</file>
+		<file>aruba.svg</file>
+		<file>cisco.svg</file>
     </qresource>
 </RCC>

@@ -428,6 +428,7 @@ private:
     QLineEdit* search_stations;
     ArubaHighlighter* highlighter;
     QTabBar* modeTabs = nullptr;
+    QFrame* toolbarCard = nullptr;
     QFrame* apGroupSelectorFrame = nullptr;
     QPushButton* btnSelectApGroups = nullptr;
     QLabel* apGroupSummaryLabel = nullptr;
@@ -519,6 +520,9 @@ private:
     QString currentArubaConfigPath() const;
     void syncArubaTargetFields();
     void syncModeUi();
+    // Repaints the toolbar chrome in the active vendor's colours (Aruba orange
+    // vs Cisco blue), mirroring the per-site theming in on_siteTabs_currentChanged.
+    void applyModeBranding();
     void loadApGroupsFromJson();
     void populateTree(QTreeWidget* tree, int siteIndex);
     void executeSearch(QTreeWidget* tree, const QString& text);

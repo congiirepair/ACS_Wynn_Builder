@@ -1596,10 +1596,14 @@ QString buildAppStyleSheet(bool darkMode) {
             border: 1px solid #10405F;
             border-radius: 14px;
         }
+        /* The hero sits a step "above" the workspace: brighter gradient, a lit
+           top edge and a black bottom edge to fake the elevation. */
         QFrame#heroCard {
             background-color: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                stop:0 #003057, stop:0.55 #071426, stop:1 #04050A);
+                stop:0 #0A3F6B, stop:0.55 #0A1B2F, stop:1 #05070E);
             border: 1px solid #00A0DF;
+            border-top: 1px solid rgba(150, 210, 255, 0.35);
+            border-bottom: 1px solid #010306;
             border-radius: 22px;
         }
         QLabel#heroTitle {
@@ -1622,8 +1626,17 @@ QString buildAppStyleSheet(bool darkMode) {
             font-size: 11px;
             font-weight: 700;
         }
-        /* Text-bearing cards stay fully opaque: readability of the fields and
-           the generated script always beats decoration. */
+        /* Workspace cards. The card SURFACE is deliberately translucent so the
+           animated constellation behind the workspace reads through it - with
+           fully opaque cards the effect was boxed into the ~10px gutters and
+           was invisible in practice. Everything that actually carries text
+           (QLineEdit / QPlainTextEdit / QTreeWidget / QListWidget / QComboBox)
+           stays 100% opaque further down, so nothing readable ever sits on a
+           moving background.
+           Depth is faked with edge lighting instead of a drop shadow: a 1px
+           lit top edge and a near-black bottom edge read as a lip catching
+           light from above. QGraphicsDropShadowEffect is deliberately avoided
+           - it would force a full-window re-composite every animation frame. */
         QFrame#apGroupSelectorFrame,
         QFrame#buyoutOptionsFrame,
         QFrame#ciscoFrame,
@@ -1631,8 +1644,13 @@ QString buildAppStyleSheet(bool darkMode) {
         QFrame#card1,
         QFrame#card4,
         QFrame#outputPanel {
-            background-color: #0A0F1A;
+            background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                stop:0 rgba(26, 38, 58, 0.62),
+                stop:0.09 rgba(11, 17, 29, 0.56),
+                stop:1 rgba(6, 10, 18, 0.58));
             border: 1px solid #10405F;
+            border-top: 1px solid rgba(130, 190, 255, 0.26);
+            border-bottom: 1px solid #02040A;
             border-radius: 18px;
         }
         /* Background-only containers. These hold nothing but opaque controls
@@ -1640,8 +1658,13 @@ QString buildAppStyleSheet(bool darkMode) {
            show through costs no legibility. */
         QFrame#toolbarCard,
         QTabWidget#siteTabs {
-            background-color: rgba(10, 15, 26, 0.55);
+            background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                stop:0 rgba(26, 38, 58, 0.50),
+                stop:0.12 rgba(10, 15, 26, 0.42),
+                stop:1 rgba(6, 10, 18, 0.44));
             border: 1px solid #10405F;
+            border-top: 1px solid rgba(130, 190, 255, 0.26);
+            border-bottom: 1px solid #02040A;
             border-radius: 18px;
         }
         QLabel#panelTitle {
@@ -1780,24 +1803,56 @@ QString buildAppStyleSheet(bool darkMode) {
             background-color: #0077A8;
             border-radius: 7px;
         }
+        /* Mode switcher: each tab wears its vendor's identity. QTabBar exposes
+           :first / :last, and with exactly two tabs that maps cleanly onto
+           Aruba (first) and Cisco (last), so the per-tab colours are pure
+           stylesheet - no per-index painting needed. */
         QTabBar#modeSwitcher::tab {
             background-color: #06131E;
             color: #95ABC4;
-            padding: 8px 18px;
+            padding: 7px 20px 7px 14px;
             font-weight: 800;
+            letter-spacing: 0.6px;
             border: 1px solid #10405F;
             border-radius: 999px;
             margin-right: 8px;
-            min-width: 88px;
+            min-width: 96px;
         }
-        QTabBar#modeSwitcher::tab:selected {
-            background-color: #00A0DF;
-            color: #FFFFFF;
-            border: 1px solid #6FD3FF;
+        /* --- Aruba (orange) --- */
+        QTabBar#modeSwitcher::tab:first {
+            background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                stop:0 rgba(255, 131, 0, 0.10), stop:1 rgba(255, 131, 0, 0.03));
+            border: 1px solid rgba(255, 131, 0, 0.34);
+            color: #C79462;
         }
-        QTabBar#modeSwitcher::tab:hover:!selected {
-            background-color: #003057;
-            color: #E5F5FF;
+        QTabBar#modeSwitcher::tab:first:hover:!selected {
+            background-color: rgba(255, 131, 0, 0.18);
+            border: 1px solid rgba(255, 131, 0, 0.55);
+            color: #FFCE96;
+        }
+        QTabBar#modeSwitcher::tab:first:selected {
+            background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                stop:0 #FFA23D, stop:0.55 #FF8300, stop:1 #E36A00);
+            border: 1px solid #FFC98A;
+            color: #1F0C00;
+        }
+        /* --- Cisco (blue) --- */
+        QTabBar#modeSwitcher::tab:last {
+            background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                stop:0 rgba(4, 159, 217, 0.10), stop:1 rgba(4, 159, 217, 0.03));
+            border: 1px solid rgba(4, 159, 217, 0.34);
+            color: #6F9EBA;
+        }
+        QTabBar#modeSwitcher::tab:last:hover:!selected {
+            background-color: rgba(4, 159, 217, 0.18);
+            border: 1px solid rgba(4, 159, 217, 0.55);
+            color: #B7E7FF;
+        }
+        QTabBar#modeSwitcher::tab:last:selected {
+            background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                stop:0 #4FC5F0, stop:0.55 #049FD9, stop:1 #0176A6);
+            border: 1px solid #A9E6FF;
+            color: #001622;
         }
         QTabBar::tab {
             background-color: transparent;
@@ -3662,13 +3717,22 @@ ACS_Wynn_Builder::ACS_Wynn_Builder(QWidget* parent)
     modeTabs->setObjectName("modeSwitcher");
     modeTabs->addTab("Aruba");
     modeTabs->addTab("Cisco");
+    // Vendor marks are hand-drawn SVGs compiled into the exe via
+    // ACS_Wynn_Builder.qrc, so there is no runtime asset to ship or lose. Both
+    // sit on a dark chip inside the artwork, which keeps them legible on the
+    // muted unselected tab AND on the solid vendor-coloured selected tab.
+    modeTabs->setIconSize(QSize(22, 22));
+    modeTabs->setTabIcon(0, QIcon(":/aruba.svg"));
+    modeTabs->setTabIcon(1, QIcon(":/cisco.svg"));
+    modeTabs->setTabToolTip(0, "Aruba controller mode (HPE Aruba WLAN configuration).");
+    modeTabs->setTabToolTip(1, "Cisco controller mode (Cisco WLC WLAN configuration).");
     modeTabs->setExpanding(false);
     modeTabs->setDocumentMode(true);
     modeTabs->setDrawBase(false);
     modeTabs->setUsesScrollButtons(false);
     connect(modeTabs, &QTabBar::currentChanged, this, &ACS_Wynn_Builder::on_modeTabs_currentChanged);
 
-    QFrame* toolbarCard = new QFrame(this);
+    toolbarCard = new QFrame(this);
     toolbarCard->setObjectName("toolbarCard");
     QVBoxLayout* toolbarCardLayout = new QVBoxLayout(toolbarCard);
     toolbarCardLayout->setContentsMargins(14, 12, 14, 12);
@@ -4226,6 +4290,10 @@ ACS_Wynn_Builder::ACS_Wynn_Builder(QWidget* parent)
     // window geometry). Done last so nothing above overwrites it.
     restoreSessionSettings();
 
+    // After the restore, so the toolbar accent matches the mode that was
+    // actually restored rather than the default one.
+    applyModeBranding();
+
     QTimer::singleShot(1200, this, [this]() { checkForUpdates(); });
 }
 
@@ -4597,7 +4665,36 @@ void ACS_Wynn_Builder::on_btn_generate_cisco_clicked() {
 
 void ACS_Wynn_Builder::on_modeTabs_currentChanged(int) {
     syncModeUi();
+    applyModeBranding();
     updateLivePreview();
+}
+
+// Mirrors the per-site theming in on_siteTabs_currentChanged: the toolbar card
+// that hosts the mode tabs picks up the active vendor's accent, so the whole
+// top strip - not just the selected pill - says "you are in Aruba mode" or
+// "you are in Cisco mode".
+void ACS_Wynn_Builder::applyModeBranding() {
+    if (!toolbarCard)
+        return;
+
+    const bool isCiscoMode = modeTabs && modeTabs->currentIndex() == 1;
+
+    // Kept as one interpolated block so the two vendor palettes stay visibly
+    // symmetrical and only the colour literals differ.
+    const QString accent = isCiscoMode ? "4, 159, 217" : "255, 131, 0";
+    const QString accentSolid = isCiscoMode ? "#049FD9" : "#FF8300";
+
+    toolbarCard->setStyleSheet(QString(R"(
+        QFrame#toolbarCard {
+            background-color: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                stop:0 rgba(%1, 0.13), stop:0.45 rgba(10, 15, 26, 0.55), stop:1 rgba(10, 15, 26, 0.45));
+            border: 1px solid rgba(%1, 0.40);
+            border-top: 1px solid rgba(%1, 0.55);
+            border-bottom: 1px solid #02040A;
+            border-left: 3px solid %2;
+            border-radius: 18px;
+        }
+    )").arg(accent, accentSolid));
 }
 
 void ACS_Wynn_Builder::on_btn_update_app_clicked() {
