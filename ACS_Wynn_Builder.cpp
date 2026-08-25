@@ -1641,6 +1641,22 @@ QString buildAppStyleSheet(bool darkMode) {
             border: 1px solid #00A0DF;
             background-color: #061018;
         }
+        /* Inline validation. Advisory only — typing and GENERATE stay unblocked. */
+        QLineEdit[fieldInvalid="true"],
+        QLineEdit[fieldInvalid="true"]:focus {
+            border: 1px solid #E5484D;
+        }
+        QToolButton#removalDateButton {
+            background-color: transparent;
+            border: 1px solid #1B5A80;
+            border-radius: 10px;
+            padding: 4px 6px;
+            font-size: 13px;
+        }
+        QToolButton#removalDateButton:hover {
+            background-color: #0B2333;
+            border: 1px solid #00A0DF;
+        }
         QComboBox QAbstractItemView {
             background-color: #061018;
             color: #F9FAFB;
@@ -1860,6 +1876,22 @@ QString buildAppStyleSheet(bool darkMode) {
         QLineEdit:focus, QPlainTextEdit:focus, QComboBox:focus {
             border: 1px solid #2D85D3;
             background-color: #FBFDFF;
+        }
+        /* Inline validation. Advisory only — typing and GENERATE stay unblocked. */
+        QLineEdit[fieldInvalid="true"],
+        QLineEdit[fieldInvalid="true"]:focus {
+            border: 1px solid #E5484D;
+        }
+        QToolButton#removalDateButton {
+            background-color: transparent;
+            border: 1px solid #C7D6E7;
+            border-radius: 10px;
+            padding: 4px 6px;
+            font-size: 13px;
+        }
+        QToolButton#removalDateButton:hover {
+            background-color: #EEF6FF;
+            border: 1px solid #2D85D3;
         }
         QComboBox QAbstractItemView {
             background-color: #FFFFFF;
@@ -3609,25 +3641,6 @@ ACS_Wynn_Builder::ACS_Wynn_Builder(QWidget* parent)
     modeTabs->setUsesScrollButtons(false);
     connect(modeTabs, &QTabBar::currentChanged, this, &ACS_Wynn_Builder::on_modeTabs_currentChanged);
 
-    profilePresetFrame = new QFrame(this);
-    profilePresetFrame->setObjectName("toolbarCard");
-    QHBoxLayout* profilePresetLayout = new QHBoxLayout(profilePresetFrame);
-    profilePresetLayout->setContentsMargins(0, 0, 0, 0);
-    profilePresetLayout->setSpacing(6);
-    QLabel* profilePresetLabel = new QLabel("Profile:", profilePresetFrame);
-    profilePresetCombo = new QComboBox(profilePresetFrame);
-    profilePresetCombo->addItem("Custom");
-    profilePresetCombo->addItem("Aruba - Wynn");
-    profilePresetCombo->addItem("Aruba - Stations");
-    profilePresetCombo->addItem("Cisco - Wynn");
-    profilePresetCombo->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Fixed);
-    profilePresetCombo->setMinimumContentsLength(14);
-    profilePresetLayout->addWidget(profilePresetLabel);
-    profilePresetLayout->addWidget(profilePresetCombo, 0);
-    profilePresetLayout->addStretch(1);
-    connect(profilePresetCombo, &QComboBox::currentIndexChanged, this, &ACS_Wynn_Builder::on_profilePreset_currentIndexChanged);
-    profilePresetFrame->hide();
-
     QFrame* toolbarCard = new QFrame(this);
     toolbarCard->setObjectName("toolbarCard");
     QVBoxLayout* toolbarCardLayout = new QVBoxLayout(toolbarCard);
@@ -3725,6 +3738,32 @@ ACS_Wynn_Builder::ACS_Wynn_Builder(QWidget* parent)
 
     addCiscoField(0, 0, "Company Name:", ciscoCompanyName, "Example Client");
     addCiscoField(0, 2, "Removal Date:", ciscoRemovalDate, "MM/DD/YYYY");
+
+    // Removal date stays a free-text QLineEdit so the exact string handed to
+    // buildCiscoWlanConfig() is unchanged. The calendar button beside it only
+    // writes text back in the placeholder's MM/DD/YYYY format.
+    {
+        ciscoDetailsLayout->removeWidget(ciscoRemovalDate);
+        QWidget* removalDateRow = new QWidget(ciscoDetailsFrame);
+        QHBoxLayout* removalDateLayout = new QHBoxLayout(removalDateRow);
+        removalDateLayout->setContentsMargins(0, 0, 0, 0);
+        removalDateLayout->setSpacing(4);
+        ciscoRemovalDate->setParent(removalDateRow);
+        removalDateLayout->addWidget(ciscoRemovalDate, 1);
+
+        ciscoRemovalDateButton = new QToolButton(removalDateRow);
+        ciscoRemovalDateButton->setObjectName("removalDateButton");
+        ciscoRemovalDateButton->setText(QString::fromUcs4(U"\U0001F4C5"));
+        ciscoRemovalDateButton->setToolTip("Pick the removal date from a calendar.");
+        ciscoRemovalDateButton->setCursor(Qt::PointingHandCursor);
+        ciscoRemovalDateButton->setFocusPolicy(Qt::NoFocus);
+        ciscoRemovalDateButton->setAutoRaise(true);
+        removalDateLayout->addWidget(ciscoRemovalDateButton, 0);
+        connect(ciscoRemovalDateButton, &QToolButton::clicked, this, &ACS_Wynn_Builder::showRemovalDatePicker);
+
+        ciscoDetailsLayout->addWidget(removalDateRow, 0, 3);
+    }
+
     addCiscoField(1, 0, "SSID:", ciscoSsid, "Broadcast SSID");
     addCiscoField(1, 2, "WLAN ID:", ciscoWlanId, "62");
     addCiscoField(2, 0, "Password:", ciscoPassword, "Minimum 8 characters");
@@ -4128,6 +4167,12 @@ ACS_Wynn_Builder::ACS_Wynn_Builder(QWidget* parent)
     workspaceSplitter->setStretchFactor(1, 2);
     workspaceSplitter->setSizes({ 620, 360 });
 
+    // Phase 3 UX. Installed before the initial reset so the reset can clear any
+    // validation state it touches, and so the shortcut tooltips are in place
+    // before the window is first shown.
+    setupInlineValidation();
+    setupKeyboardShortcuts();
+
     on_btn_reset_clicked();
     syncModeUi();
     on_siteTabs_currentChanged(ui->siteTabs->currentIndex());
@@ -4526,13 +4571,6 @@ void ACS_Wynn_Builder::on_btn_generate_cisco_clicked() {
 void ACS_Wynn_Builder::on_modeTabs_currentChanged(int) {
     syncModeUi();
     updateLivePreview();
-}
-
-void ACS_Wynn_Builder::on_profilePreset_currentIndexChanged(int) {
-    if (!profilePresetCombo)
-        return;
-
-    applyProfilePreset(profilePresetCombo->currentText(), true);
 }
 
 void ACS_Wynn_Builder::on_btn_update_app_clicked() {
@@ -5002,8 +5040,9 @@ void ACS_Wynn_Builder::on_btn_reset_clicked() {
 
     on_siteTabs_currentChanged(ui->siteTabs->currentIndex());
     syncModeUi();
-    if (profilePresetCombo && profilePresetCombo->currentText() != "Custom")
-        applyProfilePreset(profilePresetCombo->currentText(), false);
+    // Clears any inline "invalid" borders left over from the previous entry so a
+    // freshly reset form never starts out marked red.
+    clearInlineValidationState();
     updateLivePreview();
     this->statusBar()->showMessage("Reset Complete.", 3000);
 }
@@ -5285,20 +5324,19 @@ void ACS_Wynn_Builder::syncModeUi() {
     if (isCiscoMode) {
         ui->entry_ip->setText(apData.ciscoControllerIp);
         ui->entry_ip->setReadOnly(true);
-        if (profilePresetFrame)
-            profilePresetFrame->hide();
     }
     else {
         ui->entry_ip->setReadOnly(false);
         syncArubaTargetFields();
         on_siteTabs_currentChanged(ui->siteTabs->currentIndex());
-        if (profilePresetFrame)
-            profilePresetFrame->hide();
     }
     setMinimumHeight(minimumWindowHeight);
     updateBuyoutOptionsUi();
     updateApGroupSelectionSummary();
     refreshWorkspaceSummary();
+    // Mode switch changes which fields are required (Aruba PSK vs Cisco PSK),
+    // so the inline hints are recomputed for the newly visible form.
+    revalidateInlineFields();
 }
 
 void ACS_Wynn_Builder::updateApGroupSelectionSummary() {
@@ -5370,6 +5408,10 @@ void ACS_Wynn_Builder::showApGroupSelectorDialog(const QString& title, QTreeWidg
     layout->addWidget(dialogTree, 1);
     layout->addWidget(buttonBox);
 
+    // Ctrl+F routes here when the inline search boxes are hidden, so the search
+    // field must be ready to type into the moment the dialog appears.
+    searchBox->setFocus();
+
     if (dialog.exec() != QDialog::Accepted)
         return;
 
@@ -5382,42 +5424,6 @@ void ACS_Wynn_Builder::showApGroupSelectorDialog(const QString& title, QTreeWidg
     }
 
     updateLivePreview();
-}
-
-void ACS_Wynn_Builder::applyProfilePreset(const QString& presetName, bool persistSelection) {
-    if (persistSelection) {
-        QSettings settings("ACS", "ACS Tool");
-        settings.setValue("profiles/selected_preset", presetName);
-    }
-
-    if (presetName == "Aruba - Wynn") {
-        if (modeTabs)
-            modeTabs->setCurrentIndex(0);
-        ui->siteTabs->setCurrentIndex(0);
-        ui->entry_ip->setText(apData.wynnControllerIp);
-        ui->entry_path->setText(apData.wynnConfigPath);
-        ui->entry_role->setText("50Mbps-Per-User");
-    }
-    else if (presetName == "Aruba - Stations") {
-        if (modeTabs)
-            modeTabs->setCurrentIndex(0);
-        ui->siteTabs->setCurrentIndex(1);
-        ui->entry_ip->setText(apData.stationsControllerIp);
-        ui->entry_path->setText(apData.stationsConfigPath);
-        ui->entry_role->setText("50Mbps-Per-User");
-    }
-    else if (presetName == "Cisco - Wynn") {
-        if (modeTabs)
-            modeTabs->setCurrentIndex(1);
-        ui->entry_ip->setText(apData.ciscoControllerIp);
-        ui->entry_ip->setReadOnly(true);
-        if (ciscoMaxClients && ciscoMaxClients->text().trimmed().isEmpty())
-            ciscoMaxClients->setText("10");
-    }
-
-    syncModeUi();
-    updateLivePreview();
-    refreshWorkspaceSummary();
 }
 
 // Places the animated Spectrum starfield behind the whole workspace.
@@ -5459,6 +5465,360 @@ void ACS_Wynn_Builder::applyAdaptiveTheme() {
 }
 
 // ====================================================
+// PHASE 3 UX: INLINE VALIDATION
+// ====================================================
+//
+// Everything below is advisory only. It MIRRORS the generation-time rules that
+// already live in buildConfigScript() and buildCiscoWlanConfig() and never
+// blocks typing or the GENERATE buttons — the generator's "! ERROR: ..." output
+// remains the authoritative check.
+//
+// Ranges mirrored from the QIntValidators already attached to these fields:
+//   entry_vlan      1..4094  (optional: buildArubaConfig omits the vlan line when empty)
+//   ciscoWlanId     1..512   (required by buildCiscoWlanConfig)
+//   ciscoMaxClients 1..5000  (required by buildCiscoWlanConfig)
+// PSK minimum length 8 mirrors the "WPA2-PSK requires a password of at least 8
+// characters." errors. Neither generator enforces a maximum, so none is added.
+
+namespace {
+
+// A field is only eligible to be marked invalid once the user has actually
+// typed in it, or once it holds text. This keeps a pristine, untouched form
+// from lighting up red on launch.
+bool inlineFieldShouldFlag(const QLineEdit* field) {
+    if (!field)
+        return false;
+    return !field->text().trimmed().isEmpty() || field->property("fieldTouched").toBool();
+}
+
+const char* kRemovalDateFormat = "MM/dd/yyyy";
+
+} // namespace
+
+void ACS_Wynn_Builder::applyFieldValidity(QLineEdit* field, bool ok, const QString& hint) {
+    if (!field)
+        return;
+
+    // Remember the field's designed tooltip once so a cleared error restores it
+    // instead of blanking a tooltip somebody else set.
+    if (!field->property("baseToolTip").isValid())
+        field->setProperty("baseToolTip", field->toolTip());
+
+    const bool wasInvalid = field->property("fieldInvalid").toBool();
+    const bool isInvalid = !ok;
+
+    field->setProperty("fieldInvalid", isInvalid);
+    field->setToolTip(isInvalid ? hint : field->property("baseToolTip").toString());
+
+    // Dynamic properties only affect painting after a style refresh.
+    if (wasInvalid != isInvalid) {
+        field->style()->unpolish(field);
+        field->style()->polish(field);
+        field->update();
+    }
+}
+
+void ACS_Wynn_Builder::validateNumericField(QLineEdit* field, int minimum, int maximum,
+    bool required, const QString& label)
+{
+    if (!field)
+        return;
+
+    const QString text = field->text().trimmed();
+    if (text.isEmpty()) {
+        // Only a required field complains about being empty, and only after the
+        // user has been in it.
+        if (required && field->property("fieldTouched").toBool())
+            applyFieldValidity(field, false, label + " is required.");
+        else
+            applyFieldValidity(field, true, QString());
+        return;
+    }
+
+    bool parsed = false;
+    const int value = text.toInt(&parsed);
+    if (!parsed || value < minimum || value > maximum) {
+        applyFieldValidity(field, false,
+            QString("%1 must be a number between %2 and %3.")
+            .arg(label).arg(minimum).arg(maximum));
+        return;
+    }
+
+    applyFieldValidity(field, true, QString());
+}
+
+void ACS_Wynn_Builder::validatePskField(QLineEdit* field, bool required) {
+    if (!field)
+        return;
+
+    // Splash-page / open WLANs carry no passphrase, so the field is never wrong.
+    if (!required) {
+        applyFieldValidity(field, true, QString());
+        return;
+    }
+
+    if (!inlineFieldShouldFlag(field)) {
+        applyFieldValidity(field, true, QString());
+        return;
+    }
+
+    if (field->text().length() < 8) {
+        applyFieldValidity(field, false,
+            "WPA2-PSK requires a password of at least 8 characters.");
+        return;
+    }
+
+    applyFieldValidity(field, true, QString());
+}
+
+void ACS_Wynn_Builder::validateRemovalDateField() {
+    if (!ciscoRemovalDate)
+        return;
+
+    const QString text = ciscoRemovalDate->text().trimmed();
+    if (text.isEmpty()) {
+        if (ciscoRemovalDate->property("fieldTouched").toBool())
+            applyFieldValidity(ciscoRemovalDate, false, "Removal date is required (MM/DD/YYYY).");
+        else
+            applyFieldValidity(ciscoRemovalDate, true, QString());
+        return;
+    }
+
+    // While the user is mid-way through typing a date, a partial string is not
+    // an error yet. editingFinished re-runs this once focus leaves.
+    if (ciscoRemovalDate->hasFocus() && text.length() < 10) {
+        applyFieldValidity(ciscoRemovalDate, true, QString());
+        return;
+    }
+
+    const QDate parsed = QDate::fromString(text, QString::fromLatin1(kRemovalDateFormat));
+    if (!parsed.isValid()) {
+        applyFieldValidity(ciscoRemovalDate, false,
+            "Removal date must be in MM/DD/YYYY format (for example 12/31/2026).");
+        return;
+    }
+
+    if (parsed < QDate::currentDate()) {
+        applyFieldValidity(ciscoRemovalDate, false, "Removal date is in the past.");
+        return;
+    }
+
+    applyFieldValidity(ciscoRemovalDate, true, QString());
+}
+
+void ACS_Wynn_Builder::revalidateInlineFields() {
+    const bool arubaSplash = chkArubaSplashPage && chkArubaSplashPage->isChecked();
+    const bool arubaPskRequired = !arubaSplash && ui && ui->combo_auth
+        && ui->combo_auth->currentText() == "WPA2-PSK";
+    if (ui)
+        validatePskField(ui->entry_psk, arubaPskRequired);
+
+    if (ui)
+        validateNumericField(ui->entry_vlan, 1, 4094, false, "VLAN");
+
+    const bool ciscoSplash = chkCiscoSplashPage && chkCiscoSplashPage->isChecked();
+    validatePskField(ciscoPassword, !ciscoSplash);
+    validateNumericField(ciscoWlanId, 1, 512, true, "WLAN ID");
+    validateNumericField(ciscoMaxClients, 1, 5000, true, "Max Clients");
+    validateRemovalDateField();
+}
+
+void ACS_Wynn_Builder::clearInlineValidationState() {
+    const QList<QLineEdit*> fields = {
+        ui ? ui->entry_psk : nullptr,
+        ui ? ui->entry_vlan : nullptr,
+        ciscoPassword, ciscoWlanId, ciscoMaxClients, ciscoRemovalDate
+    };
+
+    for (QLineEdit* field : fields) {
+        if (!field)
+            continue;
+        field->setProperty("fieldTouched", false);
+        applyFieldValidity(field, true, QString());
+    }
+}
+
+void ACS_Wynn_Builder::setupInlineValidation() {
+    // textEdited fires only for genuine user input, so programmatic setText()
+    // (reset, preset-free defaults, WLAN-ID autofill) never marks a field as
+    // "touched".
+    auto trackTouched = [](QLineEdit* field) {
+        if (!field)
+            return;
+        QObject::connect(field, &QLineEdit::textEdited, field, [field](const QString&) {
+            field->setProperty("fieldTouched", true);
+        });
+    };
+
+    const QList<QLineEdit*> trackedFields = {
+        ui ? ui->entry_psk : nullptr,
+        ui ? ui->entry_vlan : nullptr,
+        ciscoPassword, ciscoWlanId, ciscoMaxClients, ciscoRemovalDate
+    };
+    for (QLineEdit* field : trackedFields)
+        trackTouched(field);
+
+    if (ui && ui->entry_psk)
+        connect(ui->entry_psk, &QLineEdit::textChanged, this, [this]() { revalidateInlineFields(); });
+    if (ui && ui->entry_vlan)
+        connect(ui->entry_vlan, &QLineEdit::textChanged, this, [this]() { revalidateInlineFields(); });
+    if (ui && ui->combo_auth)
+        connect(ui->combo_auth, &QComboBox::currentTextChanged, this, [this]() { revalidateInlineFields(); });
+    if (chkArubaSplashPage)
+        connect(chkArubaSplashPage, &QCheckBox::toggled, this, [this]() { revalidateInlineFields(); });
+
+    if (ciscoPassword)
+        connect(ciscoPassword, &QLineEdit::textChanged, this, [this]() { revalidateInlineFields(); });
+    if (chkCiscoSplashPage)
+        connect(chkCiscoSplashPage, &QCheckBox::toggled, this, [this]() { revalidateInlineFields(); });
+    if (ciscoWlanId)
+        connect(ciscoWlanId, &QLineEdit::textChanged, this, [this]() { revalidateInlineFields(); });
+    if (ciscoMaxClients)
+        connect(ciscoMaxClients, &QLineEdit::textChanged, this, [this]() { revalidateInlineFields(); });
+    if (ciscoRemovalDate) {
+        connect(ciscoRemovalDate, &QLineEdit::textChanged, this, [this]() { validateRemovalDateField(); });
+        // Re-check once the user leaves the field, so a half-typed date that was
+        // given the benefit of the doubt gets judged properly.
+        connect(ciscoRemovalDate, &QLineEdit::editingFinished, this, [this]() { validateRemovalDateField(); });
+    }
+
+    revalidateInlineFields();
+}
+
+// ====================================================
+// PHASE 3 UX: REMOVAL DATE PICKER
+// ====================================================
+
+void ACS_Wynn_Builder::showRemovalDatePicker() {
+    if (!ciscoRemovalDate)
+        return;
+
+    // Qt::Popup closes itself on any outside click, which is the behaviour a
+    // small calendar drop-down needs.
+    QDialog popup(this, Qt::Popup);
+    popup.setObjectName("removalDatePopup");
+    QVBoxLayout* popupLayout = new QVBoxLayout(&popup);
+    popupLayout->setContentsMargins(6, 6, 6, 6);
+    popupLayout->setSpacing(0);
+
+    QCalendarWidget* calendar = new QCalendarWidget(&popup);
+    calendar->setGridVisible(true);
+    calendar->setVerticalHeaderFormat(QCalendarWidget::NoVerticalHeader);
+    calendar->setSelectionMode(QCalendarWidget::SingleSelection);
+
+    // Seed with whatever is already typed when it parses; otherwise today.
+    const QDate existing = QDate::fromString(ciscoRemovalDate->text().trimmed(),
+        QString::fromLatin1(kRemovalDateFormat));
+    calendar->setSelectedDate(existing.isValid() ? existing : QDate::currentDate());
+
+    popupLayout->addWidget(calendar);
+
+    connect(calendar, &QCalendarWidget::clicked, &popup, [this, &popup](const QDate& date) {
+        if (!date.isValid())
+            return;
+        // Written in exactly the format the placeholder advertises and the
+        // generator consumes verbatim.
+        ciscoRemovalDate->setText(date.toString(QString::fromLatin1(kRemovalDateFormat)));
+        ciscoRemovalDate->setProperty("fieldTouched", true);
+        validateRemovalDateField();
+        updateLivePreview();
+        popup.accept();
+    });
+
+    // Anchor under the calendar button, nudged on-screen if it would overflow.
+    QWidget* anchor = ciscoRemovalDateButton ? static_cast<QWidget*>(ciscoRemovalDateButton)
+                                             : static_cast<QWidget*>(ciscoRemovalDate);
+    popup.adjustSize();
+    QPoint origin = anchor->mapToGlobal(QPoint(0, anchor->height() + 2));
+    if (QScreen* screen = anchor->screen()) {
+        const QRect available = screen->availableGeometry();
+        if (origin.x() + popup.width() > available.right())
+            origin.setX(available.right() - popup.width());
+        if (origin.y() + popup.height() > available.bottom())
+            origin.setY(anchor->mapToGlobal(QPoint(0, 0)).y() - popup.height() - 2);
+        if (origin.x() < available.left())
+            origin.setX(available.left());
+    }
+    popup.move(origin);
+    popup.exec();
+}
+
+// ====================================================
+// PHASE 3 UX: KEYBOARD SHORTCUTS
+// ====================================================
+
+void ACS_Wynn_Builder::focusActiveApGroupSearch() {
+    const bool isCiscoMode = modeTabs && modeTabs->currentIndex() == 1;
+    QLineEdit* searchBox = nullptr;
+    if (isCiscoMode)
+        searchBox = search_cisco_wynn;
+    else if (ui && ui->siteTabs)
+        searchBox = (ui->siteTabs->currentIndex() == 0) ? search_wynn : search_stations;
+
+    if (searchBox && searchBox->isVisible()) {
+        searchBox->setFocus(Qt::ShortcutFocusReason);
+        searchBox->selectAll();
+        return;
+    }
+
+    // The inline search boxes are hidden in the current layout — AP groups are
+    // chosen through the selector dialog, whose own search box takes focus on
+    // open. So Ctrl+F opens that dialog instead of doing nothing.
+    if (btnSelectApGroups && btnSelectApGroups->isVisible() && btnSelectApGroups->isEnabled())
+        btnSelectApGroups->click();
+}
+
+void ACS_Wynn_Builder::setupKeyboardShortcuts() {
+    auto clickIfUsable = [](QPushButton* button) {
+        if (button && button->isVisible() && button->isEnabled()) {
+            button->click();
+            return true;
+        }
+        return false;
+    };
+
+    // Ctrl+G — generate with whichever generator the active mode owns.
+    QShortcut* generateShortcut = new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_G), this);
+    connect(generateShortcut, &QShortcut::activated, this, [this, clickIfUsable]() {
+        const bool isCiscoMode = modeTabs && modeTabs->currentIndex() == 1;
+        if (isCiscoMode)
+            clickIfUsable(ui ? ui->btn_generate_cisco : nullptr);
+        else
+            clickIfUsable(ui ? ui->btn_generate : nullptr);
+    });
+
+    // Ctrl+D — deploy.
+    QShortcut* deployShortcut = new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_D), this);
+    connect(deployShortcut, &QShortcut::activated, this, [this, clickIfUsable]() {
+        clickIfUsable(ui ? ui->btn_deploy : nullptr);
+    });
+
+    // Ctrl+Shift+C — copy the output panel.
+    QShortcut* copyShortcut = new QShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_C), this);
+    connect(copyShortcut, &QShortcut::activated, this, [this, clickIfUsable]() {
+        clickIfUsable(ui ? ui->btn_copy : nullptr);
+    });
+
+    // Ctrl+F — jump to the AP-group search for the active tab.
+    QShortcut* findShortcut = new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_F), this);
+    connect(findShortcut, &QShortcut::activated, this, [this]() { focusActiveApGroupSearch(); });
+
+    // Surface the bindings where the user will look for them.
+    if (ui) {
+        if (ui->btn_generate)
+            ui->btn_generate->setToolTip("Build the Aruba CLI script from the form above.  (Ctrl+G)");
+        if (ui->btn_generate_cisco)
+            ui->btn_generate_cisco->setToolTip("Build the Cisco WLAN script from the form above.  (Ctrl+G)");
+        if (ui->btn_deploy)
+            ui->btn_deploy->setToolTip("Push the generated script to the controller.  (Ctrl+D)");
+        if (ui->btn_copy)
+            ui->btn_copy->setToolTip("Copy the output panel to the clipboard.  (Ctrl+Shift+C)");
+    }
+    if (btnSelectApGroups)
+        btnSelectApGroups->setToolTip("Choose the AP groups this SSID lands on.  (Ctrl+F)");
+}
+
+// ====================================================
 // SESSION PERSISTENCE (non-sensitive values only)
 // ====================================================
 
@@ -5477,6 +5837,30 @@ void ACS_Wynn_Builder::saveSessionSettings() const {
         settings.setValue("controllers/aruba_user", ui->entry_user->text().trimmed());
     if (ciscoControllerUserField)
         settings.setValue("controllers/cisco_user", ciscoControllerUserField->text().trimmed());
+
+    // Checked AP groups, stored by group NAME (never by row index) so an edited
+    // ap_groups.json can never map a saved selection onto the wrong group.
+    auto checkedGroupNames = [](QTreeWidget* tree) {
+        QStringList names;
+        if (!tree)
+            return names;
+        for (int i = 0; i < tree->topLevelItemCount(); ++i) {
+            QTreeWidgetItem* parent = tree->topLevelItem(i);
+            for (int j = 0; j < parent->childCount(); ++j) {
+                QTreeWidgetItem* child = parent->child(j);
+                if (child->checkState(0) == Qt::Checked) {
+                    const QString name = child->data(0, Qt::UserRole).toString();
+                    if (!name.isEmpty())
+                        names << name;
+                }
+            }
+        }
+        return names;
+    };
+
+    settings.setValue("ap_groups/checked_wynn", checkedGroupNames(tree_wynn));
+    settings.setValue("ap_groups/checked_stations", checkedGroupNames(tree_stations));
+    settings.setValue("ap_groups/checked_cisco", checkedGroupNames(tree_cisco_wynn));
 }
 
 void ACS_Wynn_Builder::restoreSessionSettings() {
@@ -5508,11 +5892,38 @@ void ACS_Wynn_Builder::restoreSessionSettings() {
             modeTabs->setCurrentIndex(modeIndex);
     }
 
+    // Checked AP groups. Matched by name, so a group that has since been renamed
+    // or dropped from ap_groups.json is silently skipped rather than crashing or
+    // checking the wrong row. Runs after populateTree(), which the constructor
+    // guarantees by calling restoreSessionSettings() last.
+    auto restoreCheckedGroups = [](QTreeWidget* tree, const QStringList& names) {
+        if (!tree || names.isEmpty())
+            return;
+        const QSet<QString> wanted(names.begin(), names.end());
+        // Blocked so a long restore does not rebuild the live preview per item.
+        const QSignalBlocker blocker(tree);
+        for (int i = 0; i < tree->topLevelItemCount(); ++i) {
+            QTreeWidgetItem* parent = tree->topLevelItem(i);
+            for (int j = 0; j < parent->childCount(); ++j) {
+                QTreeWidgetItem* child = parent->child(j);
+                if (wanted.contains(child->data(0, Qt::UserRole).toString()))
+                    child->setCheckState(0, Qt::Checked);
+            }
+        }
+    };
+
+    restoreCheckedGroups(tree_wynn, settings.value("ap_groups/checked_wynn").toStringList());
+    restoreCheckedGroups(tree_stations, settings.value("ap_groups/checked_stations").toStringList());
+    restoreCheckedGroups(tree_cisco_wynn, settings.value("ap_groups/checked_cisco").toStringList());
+
     // Window position/size. restoreGeometry() already refuses geometry that no
     // longer fits any connected screen.
     const QByteArray geometry = settings.value("ui/window_geometry").toByteArray();
     if (!geometry.isEmpty())
         restoreGeometry(geometry);
+
+    // One refresh for everything restored above.
+    updateLivePreview();
 }
 
 void ACS_Wynn_Builder::closeEvent(QCloseEvent* event) {

@@ -41,6 +41,11 @@
 #include <QStandardPaths>
 #include <QTimer>
 #include <QScrollArea>
+#include <QToolButton>
+#include <QShortcut>
+#include <QCalendarWidget>
+#include <QDate>
+#include <QStyle>
 
 #include "ui_ACS_Wynn_Builder.h"
 #include <libssh/libssh.h>
@@ -369,7 +374,6 @@ private slots:
     void on_btn_copy_clicked();
     void on_btn_wizard_clicked();
     void on_modeTabs_currentChanged(int index);
-    void on_profilePreset_currentIndexChanged(int index);
     void on_btn_select_ap_groups_clicked();
     void on_btn_check_wlan_ids_clicked();
     void handleSshLog(QString message);
@@ -424,8 +428,6 @@ private:
     QLineEdit* search_stations;
     ArubaHighlighter* highlighter;
     QTabBar* modeTabs = nullptr;
-    QFrame* profilePresetFrame = nullptr;
-    QComboBox* profilePresetCombo = nullptr;
     QFrame* apGroupSelectorFrame = nullptr;
     QPushButton* btnSelectApGroups = nullptr;
     QLabel* apGroupSummaryLabel = nullptr;
@@ -529,10 +531,34 @@ private:
     void ensureOutputDialog(const QString& title, bool clearOutput = false);
     void setOutputText(const QString& text, const QString& title = "Generated Output");
     void appendOutputText(const QString& text, const QString& title = "Generated Output");
-    void applyProfilePreset(const QString& presetName, bool persistSelection = true);
     void updateApGroupSelectionSummary();
     void updateBuyoutOptionsUi();
     void showApGroupSelectorDialog(const QString& title, QTreeWidget* sourceTree);
     QString resolveMRemotePath();
     QString mRemoteExecutablePath;
+
+    // ================================================
+    // PHASE 3 UX: inline validation, date picker, shortcuts
+    // ================================================
+
+    // Live field feedback. These MIRROR the generation-time rules in
+    // buildConfigScript()/buildCiscoWlanConfig() — they never block typing and
+    // never block GENERATE. Generation-time errors stay authoritative.
+    void applyFieldValidity(QLineEdit* field, bool ok, const QString& hint);
+    void setupInlineValidation();
+    void revalidateInlineFields();
+    void clearInlineValidationState();
+    void validateNumericField(QLineEdit* field, int minimum, int maximum,
+        bool required, const QString& label);
+    void validatePskField(QLineEdit* field, bool required);
+    void validateRemovalDateField();
+
+    // Removal-date calendar popup. The field stays a free-text QLineEdit so the
+    // string handed to buildCiscoWlanConfig() is unchanged; the picker only
+    // writes text in the placeholder's MM/DD/YYYY format.
+    void showRemovalDatePicker();
+    QToolButton* ciscoRemovalDateButton = nullptr;
+
+    void setupKeyboardShortcuts();
+    void focusActiveApGroupSearch();
 };
