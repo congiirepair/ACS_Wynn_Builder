@@ -156,6 +156,8 @@ public:
     void run() override;
 signals:
     void updateLog(QString message);
+    // done/total counted in real commands (script comments are excluded).
+    void progressChanged(int done, int total);
     void deployFinished();
 private:
     QString targetIp, username, password, configScript;
@@ -176,6 +178,8 @@ signals:
     void logMessage(QString message);
     void connectionStateChanged(bool connected, bool isCiscoMode, QString ip, QString user);
     void connectFinished(bool success, QString message);
+    // done/total counted in real commands (script comments are excluded).
+    void progressChanged(int done, int total);
     void deployFinished(bool success, QString message);
     void wlanIdCheckFinished(bool success, QString message, QString output);
 private:
@@ -311,6 +315,8 @@ public:
     bool isComplete() const override;
     QPlainTextEdit* sshLogOutput;
 private:
+    void updateDeployProgress(int done, int total);
+    class QProgressBar* deployProgressBar = nullptr;
     class ACS_Wynn_Builder* wizardOwner = nullptr;
     QPlainTextEdit* previewOutput;
     bool deployComplete;
@@ -320,6 +326,7 @@ private:
     bool persistentDeployStarted = false;
     QString pendingScript;
     QMetaObject::Connection logConnection;
+    QMetaObject::Connection progressConnection;
     QMetaObject::Connection connectFinishedConnection;
     QMetaObject::Connection deployFinishedConnection;
 };
@@ -409,6 +416,7 @@ private:
     QLabel* sessionBadgeLabel = nullptr;
     QLabel* outputTitleLabel = nullptr;
     QLabel* outputSubtitleLabel = nullptr;
+    class QProgressBar* deployProgressBar = nullptr;
 
     QTreeWidget* tree_wynn;
     QTreeWidget* tree_stations;

@@ -91,6 +91,9 @@
       <WarningLevel>Level3</WarningLevel>
       <SDLCheck>true</SDLCheck>
       <ConformanceMode>true</ConformanceMode>
+      <!-- Qt 6.11 headers use APIs that MSVC's /sdl promotes to errors via C4996.
+           Suppress it here so the project builds without an external _CL_=/wd4996 hack. -->
+      <DisableSpecificWarnings>4996;%(DisableSpecificWarnings)</DisableSpecificWarnings>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -110,6 +113,9 @@
       <ConformanceMode>true</ConformanceMode>
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
+      <!-- Qt 6.11 headers use APIs that MSVC's /sdl promotes to errors via C4996.
+           Suppress it here so the project builds without an external _CL_=/wd4996 hack. -->
+      <DisableSpecificWarnings>4996;%(DisableSpecificWarnings)</DisableSpecificWarnings>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>

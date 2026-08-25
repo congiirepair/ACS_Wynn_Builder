@@ -14,13 +14,13 @@ namespace {
 
 // Tuning constants ported 1:1 from the reference canvas background.
 constexpr int    kFrameIntervalMs = 33;      // ~30 fps
-constexpr int    kMaxNodes = 110;
-constexpr int    kAreaPerNode = 16000;
+constexpr int    kMaxNodes = 170;
+constexpr int    kAreaPerNode = 9000;
 constexpr qreal  kNodeSpeed = 0.28;          // px per frame, +/- half range
-constexpr qreal  kNodeRadius = 1.6;
+constexpr qreal  kNodeRadius = 1.8;
 constexpr qreal  kLinkDistance = 130.0;
 constexpr qreal  kCursorLinkDistance = 130.0 * 1.6;   // 208 px
-constexpr qreal  kLinkAlpha = 0.16;
+constexpr qreal  kLinkAlpha = 0.20;
 constexpr qreal  kCursorLinkAlpha = 0.28;
 constexpr qreal  kOffscreen = -9999.0;
 
@@ -265,9 +265,9 @@ void StarfieldBackground::paintEvent(QPaintEvent* event) {
     painter.setPen(Qt::NoPen);
 
     QColor whiteNode(255, 255, 255);
-    whiteNode.setAlphaF(0.8f);
+    whiteNode.setAlphaF(0.9f);
     QColor blueNode = kSpectrumLightBlue;
-    blueNode.setAlphaF(0.8f);
+    blueNode.setAlphaF(0.9f);
 
     for (qsizetype i = 0; i < nodeCount; ++i) {
         const Node& node = m_nodes.at(i);

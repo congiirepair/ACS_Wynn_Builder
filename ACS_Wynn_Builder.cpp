@@ -17,6 +17,7 @@
 #include <QScreen>
 #include <QWindow>
 #include <QSplitter>
+#include <QProgressBar>
 #include <QTcpSocket>
 #include <algorithm>
 #include <functional>
@@ -569,6 +570,303 @@ QString stripCiscoPagerTokens(QString chunk)
     chunk.replace("--More--", "", Qt::CaseInsensitive);
     chunk.replace("(q)uit", "", Qt::CaseInsensitive);
     return chunk;
+}
+
+// ====================================================
+// PROMPT-DETECTION FAST PATH FOR THE DEPLOY LOOPS
+// ====================================================
+//
+// Historically both deploy loops paid a fixed 250 ms "channel went quiet"
+// window after every single command. On a 130-line script that is ~30 s of
+// pure waiting. Detecting the CLI prompt lets us advance the instant the
+// controller hands the shell back.
+//
+// SAFETY CONTRACT (this is config being pushed to live casino controllers):
+//
+//   * Detection is an ADDITIONAL early exit only. If nothing is detected the
+//     loop falls through to the exact same quiet-window / max-wait / WARNING
+//     behaviour that shipped before, so the worst case is byte-for-byte
+//     today's behaviour and never slower.
+//   * The commands that git history singled out for longer waits
+//     ("Wait longer after commit and save commands" 4515a7a, "Wait longer
+//     after save confirmations" e8e5d1a) are excluded from the fast path
+//     entirely and keep their quiet-window behaviour.
+//   * Detection is deliberately conservative. A '#' or '>' anywhere inside
+//     command output cannot trigger it: the character has to be the last
+//     non-whitespace character of the buffer AND sit on a line shaped like a
+//     real controller prompt.
+
+constexpr int kCommandQuietWindowMs = 250;
+constexpr int kDefaultCommandMaxWaitMs = 2000;
+constexpr int kPromptTailScanChars = 400;
+
+// How a per-command wait is allowed to finish early.
+enum class CommandCompletionSignal {
+    QuietOnly,   // exactly the pre-existing behaviour: quiet window only
+    Prompt,      // quiet window OR the controller prompt reappearing
+    Question     // quiet window OR a "(y/n)" confirmation question
+};
+
+// Returns the last non-empty line of the buffer tail with terminal noise
+// removed. `hasPrecedingContent` reports whether anything came before that
+// line, which is how we make sure the command echo has already landed.
+QString controllerTailLine(const QString& buffer, bool* hasPrecedingContent = nullptr)
+{
+    // Only the tail can hold a prompt, so the scan cost stays constant no
+    // matter how much output a command produced.
+    const bool truncated = buffer.size() > kPromptTailScanChars;
+    QString tail = truncated ? buffer.right(kPromptTailScanChars) : buffer;
+
+    static const QRegularExpression ansiEscape(R"(\x1B\[[0-9;?]*[A-Za-z])");
+    tail.remove(ansiEscape);
+    tail = stripCiscoPagerTokens(tail);
+    tail.replace('\r', '\n');
+
+    while (!tail.isEmpty() && tail.at(tail.size() - 1).isSpace())
+        tail.chop(1);
+
+    const int lastBreak = tail.lastIndexOf('\n');
+    if (hasPrecedingContent)
+        *hasPrecedingContent = (lastBreak >= 0) || truncated;
+
+    return lastBreak >= 0 ? tail.mid(lastBreak + 1) : tail;
+}
+
+// True when the buffer ends with something that really looks like a
+// controller prompt handed back to us.
+//
+//   Aruba : "(WYNN-MC1) #", "(WYNN-MC1) [mynode] #", "(WYNN-MC1) *[mynode] (config) #"
+//   Cisco : "(Cisco Controller) >"
+//
+// The leading "(hostname)" group is required, which is what keeps a stray '#'
+// in command output from ever advancing the loop.
+bool tailLooksLikeControllerPrompt(const QString& buffer)
+{
+    bool hasPrecedingContent = false;
+    const QString line = controllerTailLine(buffer, &hasPrecedingContent);
+
+    // A buffer that is nothing but a prompt is treated as leftover output from
+    // the previous command, never as this command finishing.
+    if (!hasPrecedingContent || line.isEmpty() || line.size() > 160)
+        return false;
+
+    static const QRegularExpression promptShape(
+        R"(^\s*\([^()\r\n]{1,60}\)(?:\s*[*^~]?\s*[\[(][^\[\]()\r\n]{0,60}[\])])*\s*[#>]$)");
+    return promptShape.match(line).hasMatch();
+}
+
+// True when the buffer ends with a yes/no confirmation question. Used only for
+// commands whose very next script line answers the question (a bare "y"), so a
+// detected question means "the controller is ready for the answer".
+bool tailLooksLikeConfirmationQuestion(const QString& buffer)
+{
+    bool hasPrecedingContent = false;
+    const QString line = controllerTailLine(buffer, &hasPrecedingContent);
+    if (!hasPrecedingContent || line.isEmpty() || line.size() > 300)
+        return false;
+
+    static const QRegularExpression questionShape(
+        R"((?:\(\s*y\s*/\s*n\s*\)|\(\s*yes\s*/\s*no\s*\))\s*[:?]?\s*$)",
+        QRegularExpression::CaseInsensitiveOption);
+    return questionShape.match(line).hasMatch();
+}
+
+bool isScriptComment(const QString& rawLine)
+{
+    const QString line = rawLine.trimmed();
+    return line.isEmpty() || line.startsWith('!');
+}
+
+// Decides how a given script line is allowed to complete early.
+CommandCompletionSignal completionSignalForCommand(const QString& rawLine,
+    const QString& previousRawLine,
+    const QString& nextRawLine)
+{
+    // Commands that git history explicitly gave a longer wait ("configuration
+    // commit", "write memory", "save config", "copy running-config
+    // startup-config", and the "y" that confirms a save) keep the old
+    // quiet-window behaviour verbatim. These are the commands where the
+    // controller can go silent mid-work and where a stale prompt would be the
+    // most dangerous thing to advance on.
+    if (commandMaxWaitMs(rawLine, previousRawLine) > kDefaultCommandMaxWaitMs)
+        return CommandCompletionSignal::QuietOnly;
+
+    // If the next script line answers a confirmation question, then what this
+    // command produces is a question, not a prompt. Watch for the question
+    // instead; anything else falls back to the quiet window.
+    const QString nextLine = nextRawLine.trimmed().toLower();
+    if (nextLine == "y" || nextLine == "yes" || nextLine == "n" || nextLine == "no")
+        return CommandCompletionSignal::Question;
+
+    return CommandCompletionSignal::Prompt;
+}
+
+// Drop-in replacement for waitForShellQuiet() that additionally captures the
+// individual command's response and can finish early on a prompt/question.
+// With CommandCompletionSignal::QuietOnly it is behaviourally identical to
+// waitForShellQuiet(), including the false-on-timeout return value that both
+// deploy loops turn into the existing WARNING message.
+bool waitForCommandCompletion(ssh_channel channel,
+    char* readBuf,
+    int readBufSize,
+    int quietWindowMs,
+    int maxWaitMs,
+    CommandCompletionSignal signal,
+    QString* commandOutput,
+    QString* transcript = nullptr,
+    std::function<void(const QString&)> onChunk = {})
+{
+    QString localOutput;
+    QString* response = commandOutput ? commandOutput : &localOutput;
+
+    QElapsedTimer totalTimer;
+    QElapsedTimer quietTimer;
+    totalTimer.start();
+    quietTimer.start();
+
+    while (totalTimer.elapsed() < maxWaitMs) {
+        QString chunk;
+        const bool receivedData = readNonBlockingShell(channel, readBuf, readBufSize, &chunk, onChunk);
+        if (!chunk.isEmpty()) {
+            response->append(chunk);
+            if (transcript)
+                transcript->append(chunk);
+        }
+
+        if (receivedData) {
+            switch (signal) {
+            case CommandCompletionSignal::Prompt:
+                if (tailLooksLikeControllerPrompt(*response))
+                    return true;
+                break;
+            case CommandCompletionSignal::Question:
+                if (tailLooksLikeConfirmationQuestion(*response))
+                    return true;
+                break;
+            case CommandCompletionSignal::QuietOnly:
+                break;
+            }
+            quietTimer.restart();
+        }
+        else if (quietTimer.elapsed() >= quietWindowMs) {
+            return true;
+        }
+        else {
+            QThread::msleep(kCiscoReadPollMs);
+        }
+    }
+
+    return false;
+}
+
+// ====================================================
+// PER-COMMAND ERROR DETECTION
+// ====================================================
+//
+// Extend these lists as new controller wording shows up. Matching is
+// case-insensitive substring matching against the command's own response, with
+// the echoed command line skipped so an unlucky SSID can never trip a match.
+
+const QStringList& arubaErrorPatterns()
+{
+    static const QStringList patterns = {
+        "% invalid input",
+        "% parse error",
+        "% unrecognized command",
+        "% incomplete command",
+        "% access denied",
+        "error:",
+    };
+    return patterns;
+}
+
+const QStringList& ciscoErrorPatterns()
+{
+    static const QStringList patterns = {
+        "incorrect usage",
+        "request failed",
+        "error!!",
+        "invalid ",
+        "already in use",
+    };
+    return patterns;
+}
+
+// Returns the first response line that matches a vendor error pattern, or an
+// empty string when the response looks clean.
+QString findCommandErrorLine(const QString& command, const QString& response, bool isCiscoMode)
+{
+    if (response.trimmed().isEmpty())
+        return QString();
+
+    const QStringList& patterns = isCiscoMode ? ciscoErrorPatterns() : arubaErrorPatterns();
+    const QString normalizedCommand = command.trimmed();
+
+    QString cleaned = response;
+    static const QRegularExpression ansiEscape(R"(\x1B\[[0-9;?]*[A-Za-z])");
+    cleaned.remove(ansiEscape);
+    cleaned = stripCiscoPagerTokens(cleaned);
+    cleaned.replace("\r\n", "\n");
+    cleaned.replace('\r', '\n');
+
+    const QStringList responseLines = cleaned.split('\n');
+    for (const QString& rawResponseLine : responseLines) {
+        const QString line = rawResponseLine.trimmed();
+        if (line.isEmpty())
+            continue;
+
+        // Skip the shell echo of the command we just sent.
+        if (line == normalizedCommand)
+            continue;
+
+        const QString lowered = line.toLower();
+        for (const QString& pattern : patterns) {
+            if (lowered.contains(pattern))
+                return line;
+        }
+    }
+
+    return QString();
+}
+
+// Builds the end-of-deployment summary block. Success and failure are made
+// deliberately different so a bad deploy cannot be mistaken for a good one at
+// a glance in the log.
+QStringList deploymentSummaryLines(int commandCount,
+    const QList<QPair<QString, QString>>& failures,
+    qint64 elapsedMs)
+{
+    const QString elapsed = QString::number(elapsedMs / 1000.0, 'f', 1);
+    QStringList summary;
+    summary << QString();
+
+    if (failures.isEmpty()) {
+        summary << ">>> ============================================================";
+        summary << QString(">>> DEPLOYMENT COMPLETE - %1 commands, no errors, %2s")
+                       .arg(commandCount)
+                       .arg(elapsed);
+        summary << ">>> ============================================================";
+        return summary;
+    }
+
+    summary << ">>> !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!";
+    summary << QString(">>> DEPLOYMENT FINISHED WITH ERRORS - %1 of %2 commands failed, %3s:")
+                   .arg(failures.size())
+                   .arg(commandCount)
+                   .arg(elapsed);
+    for (const QPair<QString, QString>& failure : failures)
+        summary << QString(">>>     FAILED: '%1' -> %2").arg(failure.first, failure.second);
+    summary << ">>> Review the transcript above and re-check these commands on the";
+    summary << ">>> controller before treating this deployment as done.";
+    summary << ">>> !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!";
+    return summary;
+}
+
+// Progress markers: quiet enough not to drown the transcript, frequent enough
+// to show that a long script is moving.
+int progressStepForCommandCount(int commandCount)
+{
+    return qMax(10, commandCount / 10);
 }
 }
 
@@ -1297,16 +1595,25 @@ QString buildAppStyleSheet(bool darkMode) {
             font-size: 11px;
             font-weight: 700;
         }
-        QFrame#toolbarCard,
+        /* Text-bearing cards stay fully opaque: readability of the fields and
+           the generated script always beats decoration. */
         QFrame#apGroupSelectorFrame,
         QFrame#buyoutOptionsFrame,
         QFrame#ciscoFrame,
         QFrame#ciscoLoginFrame,
         QFrame#card1,
         QFrame#card4,
-        QTabWidget#siteTabs,
         QFrame#outputPanel {
             background-color: #0A0F1A;
+            border: 1px solid #10405F;
+            border-radius: 18px;
+        }
+        /* Background-only containers. These hold nothing but opaque controls
+           (buttons, tab bars, list widgets), so letting the Spectrum starfield
+           show through costs no legibility. */
+        QFrame#toolbarCard,
+        QTabWidget#siteTabs {
+            background-color: rgba(10, 15, 26, 0.55);
             border: 1px solid #10405F;
             border-radius: 18px;
         }
@@ -1413,8 +1720,22 @@ QString buildAppStyleSheet(bool darkMode) {
         QTabWidget::pane {
             border: 1px solid #10405F;
             border-radius: 16px;
-            background: #0A0F1A;
+            background: rgba(10, 15, 26, 0.55);
             top: 0px;
+        }
+        QProgressBar#deployProgressBar, QProgressBar {
+            background-color: rgba(4, 5, 10, 0.85);
+            border: 1px solid #1B5A80;
+            border-radius: 8px;
+            color: #DDF1FF;
+            font-family: 'Segoe UI';
+            font-size: 10px;
+            font-weight: 700;
+            text-align: center;
+        }
+        QProgressBar::chunk {
+            background-color: #0077A8;
+            border-radius: 7px;
         }
         QTabBar#modeSwitcher::tab {
             background-color: #06131E;
@@ -1824,7 +2145,23 @@ void SshWorker::run() {
     QStringList lines = cleanScript.split('\n', Qt::SkipEmptyParts);
     QString previousLine;
 
+    // Comments are not commands: they are neither counted nor error-scanned.
+    int commandTotal = 0;
     for (const QString& line : lines) {
+        if (!isScriptComment(line))
+            ++commandTotal;
+    }
+
+    const int progressStep = progressStepForCommandCount(commandTotal);
+    int commandsSent = 0;
+    QList<QPair<QString, QString>> failures;
+    QElapsedTimer deployTimer;
+    deployTimer.start();
+
+    for (int i = 0; i < lines.size(); ++i) {
+        const QString& line = lines.at(i);
+        const QString nextLine = (i + 1 < lines.size()) ? lines.at(i + 1) : QString();
+
         const QByteArray payload = (line + "\n").toUtf8();
         if (ssh_channel_write(channel, payload.constData(),
             static_cast<uint32_t>(payload.size())) == SSH_ERROR) {
@@ -1835,12 +2172,34 @@ void SshWorker::run() {
             return;
         }
 
-        // Wait for the controller to go quiet before sending the next line.
+        // Advance as soon as the controller hands the prompt back; otherwise
+        // fall through to exactly the previous quiet-window behaviour.
         const int maxWaitMs = commandMaxWaitMs(line, previousLine);
-        if (!drainUntilQuiet(250, maxWaitMs)) {
+        const CommandCompletionSignal signal = completionSignalForCommand(line, previousLine, nextLine);
+        QString commandOutput;
+        if (!waitForCommandCompletion(channel, readBuf, sizeof(readBuf),
+                kCommandQuietWindowMs, maxWaitMs, signal, &commandOutput, nullptr, emitChunk)) {
             emit updateLog(QString(">>> WARNING: Controller stayed busy longer than expected after '%1'. Continuing with the next command.")
                 .arg(line));
         }
+
+        if (!isScriptComment(line)) {
+            ++commandsSent;
+
+            const QString errorLine = findCommandErrorLine(line, commandOutput, isCiscoDeploy);
+            if (!errorLine.isEmpty()) {
+                // Keep going. Aborting mid-script would leave the controller
+                // half-configured, which is worse than finishing and reporting.
+                emit updateLog(QString(">>> COMMAND FAILED: '%1' -> %2").arg(line, errorLine));
+                failures.append(qMakePair(line, errorLine));
+            }
+
+            if (commandTotal > 0 && commandsSent % progressStep == 0 && commandsSent < commandTotal) {
+                emit updateLog(QString(">>> Progress: %1/%2 commands...").arg(commandsSent).arg(commandTotal));
+            }
+            emit progressChanged(commandsSent, commandTotal);
+        }
+
         previousLine = line;
     }
 
@@ -1850,7 +2209,9 @@ void SshWorker::run() {
         emit updateLog(">>> WARNING: Controller output did not go quiet before the final timeout. Review the last response carefully.");
     }
 
-    emit updateLog("\n>>> DEPLOYMENT COMPLETE. Disconnecting...");
+    for (const QString& summaryLine : deploymentSummaryLines(commandsSent, failures, deployTimer.elapsed()))
+        emit updateLog(summaryLine);
+    emit updateLog(">>> Disconnecting...");
 
     closeSshChannel(channel);
     closeSshSession(session);
@@ -2028,8 +2389,26 @@ void ControllerSessionManager::deployPersistentInternal(QString script, bool all
     const QStringList lines = cleanScript.split('\n', Qt::SkipEmptyParts);
     QString shellOutput;
     QString previousLine;
-    waitForShellQuiet(channel, readBuf, sizeof(readBuf), 250, 1500, &shellOutput, emitChunk);
+    const bool isCiscoDeploy = currentCiscoMode;
+
+    // Comments are not commands: they are neither counted nor error-scanned.
+    int commandTotal = 0;
     for (const QString& line : lines) {
+        if (!isScriptComment(line))
+            ++commandTotal;
+    }
+
+    const int progressStep = progressStepForCommandCount(commandTotal);
+    int commandsSent = 0;
+    QList<QPair<QString, QString>> failures;
+    QElapsedTimer deployTimer;
+    deployTimer.start();
+
+    waitForShellQuiet(channel, readBuf, sizeof(readBuf), 250, 1500, &shellOutput, emitChunk);
+    for (int i = 0; i < lines.size(); ++i) {
+        const QString& line = lines.at(i);
+        const QString nextLine = (i + 1 < lines.size()) ? lines.at(i + 1) : QString();
+
         const QByteArray payload = (line + "\n").toUtf8();
         if (ssh_channel_write(channel, payload.constData(), static_cast<uint32_t>(payload.size())) == SSH_ERROR) {
             if (reconnectAndRetry())
@@ -2041,15 +2420,51 @@ void ControllerSessionManager::deployPersistentInternal(QString script, bool all
             return;
         }
 
+        // Advance as soon as the controller hands the prompt back; otherwise
+        // fall through to exactly the previous quiet-window behaviour.
         const int maxWaitMs = commandMaxWaitMs(line, previousLine);
-        if (!waitForShellQuiet(channel, readBuf, sizeof(readBuf), 250, maxWaitMs, &shellOutput, emitChunk)) {
+        const CommandCompletionSignal signal = completionSignalForCommand(line, previousLine, nextLine);
+        QString commandOutput;
+        if (!waitForCommandCompletion(channel, readBuf, sizeof(readBuf),
+                kCommandQuietWindowMs, maxWaitMs, signal, &commandOutput, &shellOutput, emitChunk)) {
             emit logMessage(QString(">>> WARNING: Controller stayed busy longer than expected after '%1'. Continuing with the next command.")
                 .arg(line));
         }
+
+        if (!isScriptComment(line)) {
+            ++commandsSent;
+
+            const QString errorLine = findCommandErrorLine(line, commandOutput, isCiscoDeploy);
+            if (!errorLine.isEmpty()) {
+                // Keep going. Aborting mid-script would leave the controller
+                // half-configured, which is worse than finishing and reporting.
+                emit logMessage(QString(">>> COMMAND FAILED: '%1' -> %2").arg(line, errorLine));
+                failures.append(qMakePair(line, errorLine));
+            }
+
+            if (commandTotal > 0 && commandsSent % progressStep == 0 && commandsSent < commandTotal) {
+                emit logMessage(QString(">>> Progress: %1/%2 commands...").arg(commandsSent).arg(commandTotal));
+            }
+            emit progressChanged(commandsSent, commandTotal);
+        }
+
         previousLine = line;
     }
 
     waitForShellQuiet(channel, readBuf, sizeof(readBuf), 1200, 10000, &shellOutput, emitChunk);
+
+    for (const QString& summaryLine : deploymentSummaryLines(commandsSent, failures, deployTimer.elapsed()))
+        emit logMessage(summaryLine);
+
+    // The session itself is healthy either way, so deployFinished() keeps its
+    // existing success semantics (that flag drives session recovery and the
+    // post-deploy Cisco WLAN refresh). The failure count rides along in the
+    // status message instead.
+    const QString failureSuffix = failures.isEmpty()
+        ? QString()
+        : QString(" %1 of %2 commands reported errors - review the deployment log.")
+              .arg(failures.size())
+              .arg(commandsSent);
 
     if (!ssh_channel_is_open(channel) || ssh_channel_is_eof(channel)) {
         const QString reconnectIp = currentIp;
@@ -2070,7 +2485,7 @@ void ControllerSessionManager::deployPersistentInternal(QString script, bool all
 
         if (connected && currentIp == reconnectIp && currentUser == reconnectUser && currentCiscoMode == reconnectCiscoMode) {
             emit logMessage(">>> " + controllerLabel + " session restored after deployment.");
-            emit deployFinished(true, controllerLabel + " deployment complete. Session reconnected and ready.");
+            emit deployFinished(true, controllerLabel + " deployment complete. Session reconnected and ready." + failureSuffix);
             return;
         }
 
@@ -2079,7 +2494,7 @@ void ControllerSessionManager::deployPersistentInternal(QString script, bool all
     }
 
     emit logMessage(">>> " + controllerLabel + " deployment finished on active session.");
-    emit deployFinished(true, controllerLabel + " deployment complete on active session.");
+    emit deployFinished(true, controllerLabel + " deployment complete on active session." + failureSuffix);
 }
 
 void ControllerSessionManager::checkWlanIdsPersistent() {
@@ -2789,13 +3204,38 @@ WizardPage6::WizardPage6(QPlainTextEdit* preview, ACS_Wynn_Builder* owner, Deplo
     QVBoxLayout* l = new QVBoxLayout(this);
     sshLogOutput = new QPlainTextEdit(this);
     sshLogOutput->setReadOnly(true);
+    deployProgressBar = new QProgressBar(this);
+    deployProgressBar->setRange(0, 100);
+    deployProgressBar->setValue(0);
+    deployProgressBar->setTextVisible(true);
+    deployProgressBar->setFormat("%v / %m commands");
+    deployProgressBar->setMaximumHeight(16);
+    deployProgressBar->hide();
     l->addWidget(new QLabel("Deployment Logs:"));
+    l->addWidget(deployProgressBar);
     l->addWidget(sshLogOutput);
     setLayout(l);
 }
 
+// Shared by both deploy paths so the bar behaves identically whether the page
+// used a one-shot SshWorker or the persistent session manager.
+void WizardPage6::updateDeployProgress(int done, int total) {
+    if (!deployProgressBar || total <= 0)
+        return;
+
+    if (deployProgressBar->maximum() != total)
+        deployProgressBar->setRange(0, total);
+    deployProgressBar->setValue(done);
+    deployProgressBar->show();
+}
+
 void WizardPage6::initializePage() {
     sshLogOutput->clear();
+    if (deployProgressBar) {
+        deployProgressBar->setRange(0, 100);
+        deployProgressBar->setValue(0);
+        deployProgressBar->hide();
+    }
     deployComplete = false;
     waitingForPersistentConnect = false;
     persistentDeployStarted = false;
@@ -2809,6 +3249,8 @@ void WizardPage6::initializePage() {
 
     if (logConnection)
         disconnect(logConnection);
+    if (progressConnection)
+        disconnect(progressConnection);
     if (connectFinishedConnection)
         disconnect(connectFinishedConnection);
     if (deployFinishedConnection)
@@ -2824,6 +3266,9 @@ void WizardPage6::initializePage() {
         SshWorker* worker = new SshWorker(ip, user, pass, script, deployOptions, this);
         connect(worker, &SshWorker::updateLog, this, [this](const QString& msg) {
             sshLogOutput->appendPlainText(msg);
+            });
+        connect(worker, &SshWorker::progressChanged, this, [this](int done, int total) {
+            updateDeployProgress(done, total);
             });
         connect(worker, &SshWorker::deployFinished, this, [this, worker]() {
             deployComplete = true;
@@ -2894,6 +3339,11 @@ void WizardPage6::initializePage() {
         logConnection = connect(manager, &ControllerSessionManager::logMessage, this,
             [this](const QString& msg) {
                 sshLogOutput->appendPlainText(msg);
+            });
+
+        progressConnection = connect(manager, &ControllerSessionManager::progressChanged, this,
+            [this](int done, int total) {
+                updateDeployProgress(done, total);
             });
 
         connectFinishedConnection = connect(manager, &ControllerSessionManager::connectFinished, this,
@@ -3098,6 +3548,19 @@ ACS_Wynn_Builder::ACS_Wynn_Builder(QWidget* parent)
 
     actionPanelLayout->addWidget(actionButtonsRow);
     outputPanelLayout->addWidget(outputTitleLabel);
+
+    // Deployment progress. Hidden until a deploy actually reports progress, so
+    // the preview panel looks exactly as it does today the rest of the time.
+    deployProgressBar = new QProgressBar(outputPanel);
+    deployProgressBar->setObjectName("deployProgressBar");
+    deployProgressBar->setRange(0, 100);
+    deployProgressBar->setValue(0);
+    deployProgressBar->setTextVisible(true);
+    deployProgressBar->setFormat("Deploying  %v / %m commands");
+    deployProgressBar->setMaximumHeight(16);
+    deployProgressBar->hide();
+    outputPanelLayout->addWidget(deployProgressBar);
+
     if (ui->text_output)
         ui->mainLayout->removeWidget(ui->text_output);
     outputPanelLayout->addWidget(ui->text_output, 1);
@@ -3500,6 +3963,15 @@ ACS_Wynn_Builder::ACS_Wynn_Builder(QWidget* parent)
     persistentSessionManager->moveToThread(persistentSessionThread);
     connect(persistentSessionThread, &QThread::finished, persistentSessionManager, &QObject::deleteLater);
     connect(persistentSessionManager, &ControllerSessionManager::logMessage, this, &ACS_Wynn_Builder::handleSshLog);
+    connect(persistentSessionManager, &ControllerSessionManager::progressChanged, this,
+        [this](int done, int total) {
+            if (!deployProgressBar || total <= 0)
+                return;
+            if (deployProgressBar->maximum() != total)
+                deployProgressBar->setRange(0, total);
+            deployProgressBar->setValue(done);
+            deployProgressBar->show();
+        });
     connect(persistentSessionManager, &ControllerSessionManager::connectionStateChanged, this,
         [this](bool connected, bool isCiscoMode, const QString& ip, const QString& user) {
             ciscoSessionConnected = connected;
@@ -3563,6 +4035,8 @@ ACS_Wynn_Builder::ACS_Wynn_Builder(QWidget* parent)
         [this](bool success, const QString& message) {
             ui->btn_deploy->setEnabled(true);
             ui->btn_deploy->setText("DEPLOY");
+            if (deployProgressBar)
+                deployProgressBar->hide();
             if (!success)
                 appendOutputText(">>> ERROR: " + message, "Deployment Console");
             else if (ciscoSessionConnected && ciscoSessionIsCiscoMode) {
