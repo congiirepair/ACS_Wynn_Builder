@@ -16,6 +16,7 @@
 #include <QDialogButtonBox>
 #include <QScreen>
 #include <QWindow>
+#include <QStyleHints>
 #include <QSplitter>
 #include <QProgressBar>
 #include <QTcpSocket>
@@ -626,8 +627,16 @@ QString controllerTailLine(const QString& buffer, bool* hasPrecedingContent = nu
         tail.chop(1);
 
     const int lastBreak = tail.lastIndexOf('\n');
-    if (hasPrecedingContent)
-        *hasPrecedingContent = (lastBreak >= 0) || truncated;
+    if (hasPrecedingContent) {
+        // A bare line break is NOT preceding content. A command whose wait ended
+        // on the quiet window can leave the trailing "\r\n" of the previous
+        // response unread, so the next command's very first read can be nothing
+        // but "\r\n(WYNN-MC1) #" - a stale prompt that would otherwise be
+        // mistaken for this command already finishing. Requiring real text
+        // before the prompt means the command echo has genuinely landed.
+        *hasPrecedingContent = truncated
+            || (lastBreak >= 0 && !QStringView(tail).left(lastBreak).trimmed().isEmpty());
+    }
 
     return lastBreak >= 0 ? tail.mid(lastBreak + 1) : tail;
 }
@@ -784,6 +793,11 @@ const QStringList& ciscoErrorPatterns()
 {
     static const QStringList patterns = {
         "incorrect usage",
+        // A WLC rejects a mistyped command with "Incorrect input! Use '?' for
+        // help." Without this the summary reports "no errors" for a deployment
+        // where a command never ran, which is the one failure mode this whole
+        // feature exists to prevent.
+        "incorrect input",
         "request failed",
         "error!!",
         "invalid ",
@@ -818,6 +832,19 @@ QString findCommandErrorLine(const QString& command, const QString& response, bo
         // Skip the shell echo of the command we just sent.
         if (line == normalizedCommand)
             continue;
+
+        // The echo often arrives with the previous command's prompt still glued
+        // to the front of it ("(Cisco Controller) >config wlan create ..."),
+        // which is still an echo and not an error line. Without this an SSID or
+        // company name containing "invalid", "error:" or "already in use" makes
+        // a perfectly good deployment report COMMAND FAILED. The prompt-suffix
+        // test keeps a genuine error line from ever being skipped here.
+        if (!normalizedCommand.isEmpty() && line.endsWith(normalizedCommand)) {
+            const QString echoPrefix =
+                line.left(line.size() - normalizedCommand.size()).trimmed();
+            if (echoPrefix.endsWith('#') || echoPrefix.endsWith('>'))
+                continue;
+        }
 
         const QString lowered = line.toLower();
         for (const QString& pattern : patterns) {
@@ -5450,6 +5477,18 @@ void ACS_Wynn_Builder::applyAdaptiveTheme() {
     // one-line revert if it ever needs to come back.
     const bool darkMode = true;
 
+    // The stylesheet only reaches widgets it has selectors for. QDialog,
+    // QMessageBox, QWizard and QCalendarWidget have none, so they keep the host
+    // OS palette - and on a light-mode Windows box that put the stylesheet's
+    // near-white QLabel text on a light grey dialog. That makes the SSH
+    // host-key TRUST prompt and the "enter the controller password" warnings
+    // unreadable. Forcing the color scheme alongside the stylesheet keeps the
+    // palette and the stylesheet in agreement on every machine.
+#if QT_VERSION >= QT_VERSION_CHECK(6, 8, 0)
+    if (QStyleHints* hints = QGuiApplication::styleHints())
+        hints->setColorScheme(darkMode ? Qt::ColorScheme::Dark : Qt::ColorScheme::Unknown);
+#endif
+
     setStyleSheet(buildAppStyleSheet(darkMode));
 
     if (ui && ui->mainLayout) {
@@ -5787,10 +5826,28 @@ void ACS_Wynn_Builder::setupKeyboardShortcuts() {
             clickIfUsable(ui ? ui->btn_generate : nullptr);
     });
 
-    // Ctrl+D — deploy.
+    // Ctrl+D — deploy. Unlike GENERATE and COPY this one pushes config to a live
+    // controller, and Ctrl+D is muscle memory for "duplicate"/"bookmark" in most
+    // other apps. The DEPLOY button itself is unchanged; only the accidental
+    // keystroke path is confirmed.
     QShortcut* deployShortcut = new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_D), this);
     connect(deployShortcut, &QShortcut::activated, this, [this, clickIfUsable]() {
-        clickIfUsable(ui ? ui->btn_deploy : nullptr);
+        QPushButton* deployButton = ui ? ui->btn_deploy : nullptr;
+        if (!deployButton || !deployButton->isVisible() || !deployButton->isEnabled())
+            return;
+
+        const bool isCiscoMode = modeTabs && modeTabs->currentIndex() == 1;
+        const QString target = isCiscoMode ? ui->entry_ip->text().trimmed()
+                                           : currentArubaControllerIp();
+        const QMessageBox::StandardButton answer = QMessageBox::question(
+            this, "Deploy to controller?",
+            QString("Ctrl+D will push the generated script to %1 now.\n\nContinue?")
+                .arg(target.isEmpty() ? QString("the selected controller") : target),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+        if (answer != QMessageBox::Yes)
+            return;
+
+        clickIfUsable(deployButton);
     });
 
     // Ctrl+Shift+C — copy the output panel.
