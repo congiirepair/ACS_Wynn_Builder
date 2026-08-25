@@ -35,6 +35,12 @@
     <ClCompile Include="ACS_Wynn_Builder.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <QtMoc Include="StarfieldBackground.h">
+      <Filter>Header Files</Filter>
+    </QtMoc>
+    <ClCompile Include="StarfieldBackground.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <QtRcc Include="..\resource.qrc">
       <Filter>Resource Files</Filter>
     </QtRcc>

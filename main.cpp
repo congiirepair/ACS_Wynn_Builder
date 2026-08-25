@@ -39,7 +39,7 @@ int main(int argc, char* argv[])
     // Build the main window first, then only keep the splash around briefly.
     ACS_Wynn_Builder w;
 
-    const int minimumSplashMs = 650;
+    const int minimumSplashMs = 150;
     const int remainingDelayMs = qMax(0, minimumSplashMs - static_cast<int>(splashTimer.elapsed()));
     QTimer::singleShot(remainingDelayMs, [&]() {
         w.show();

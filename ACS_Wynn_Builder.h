@@ -45,6 +45,10 @@
 #include "ui_ACS_Wynn_Builder.h"
 #include <libssh/libssh.h>
 
+// Animated Spectrum starfield painted behind the workspace.
+// Forward declared so moc never has to walk into its header.
+class StarfieldBackground;
+
 // ====================================================
 // SHARED DATA STRUCTURES
 // ====================================================
@@ -340,6 +344,7 @@ public:
 protected:
     void mousePressEvent(QMouseEvent* event) override;
     void mouseMoveEvent(QMouseEvent* event) override;
+    void closeEvent(QCloseEvent* event) override;
 
 signals:
     void ciscoSessionStateChanged();
@@ -377,6 +382,8 @@ private slots:
 private:
     Ui::ACS_Wynn_BuilderClass* ui;
     QPoint dragPosition;
+    QScrollArea* workspaceScrollArea = nullptr;
+    StarfieldBackground* starfieldBackground = nullptr;
     bool ciscoSessionConnected = false;
     QString ciscoSessionIp;
     QString ciscoSessionUser;
@@ -454,7 +461,7 @@ private:
     QNetworkAccessManager* downloadManager;
 
     QPushButton* btnUpdateApp = nullptr;
-    const QString CURRENT_VERSION = "2.3.28";
+    const QString CURRENT_VERSION = "2.4.0";
     void checkForUpdates(bool interactive = false, bool testingChannel = false);
     QString installedVersionLabel() const;
 
@@ -506,6 +513,9 @@ private:
     void populateTree(QTreeWidget* tree, int siteIndex);
     void executeSearch(QTreeWidget* tree, const QString& text);
     void applyAdaptiveTheme();
+    void installStarfieldBackground();
+    void saveSessionSettings() const;
+    void restoreSessionSettings();
     void updateCiscoConnectionUi();
     void ensureSshSessionDialog(const QString& title, const QString& statusText, bool clearLog = true);
     void ensureOutputDialog(const QString& title, bool clearOutput = false);

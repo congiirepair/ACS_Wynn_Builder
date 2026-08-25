@@ -126,7 +126,9 @@
     <QtRcc Include="ACS_Wynn_Builder.qrc" />
     <QtUic Include="ACS_Wynn_Builder.ui" />
     <QtMoc Include="ACS_Wynn_Builder.h" />
+    <QtMoc Include="StarfieldBackground.h" />
     <ClCompile Include="ACS_Wynn_Builder.cpp" />
+    <ClCompile Include="StarfieldBackground.cpp" />
     <ClCompile Include="main.cpp" />
     <ClInclude Include="resource.h" />
     <ClInclude Include="stdafx.h" />

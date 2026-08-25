@@ -1,4 +1,5 @@
 #include "ACS_Wynn_Builder.h"
+#include "StarfieldBackground.h"
 #include <QGuiApplication>
 #include <QCoreApplication>
 #include <QClipboard>
@@ -14,6 +15,7 @@
 #include <QCryptographicHash>
 #include <QDialogButtonBox>
 #include <QScreen>
+#include <QWindow>
 #include <QSplitter>
 #include <QTcpSocket>
 #include <algorithm>
@@ -1228,9 +1230,29 @@ bool fetchCiscoWlanSummaryTrusted(const QString& ip, const QString& user, const 
 QString buildAppStyleSheet(bool darkMode) {
     if (darkMode) {
         return R"(
-        QMainWindow, QWidget#centralWidget {
-            background-color: #07111F;
-            border: 1px solid #10233E;
+        QMainWindow {
+            background-color: #000000;
+            border: 1px solid #00304F;
+        }
+        /* Transparent so the animated Spectrum starfield behind the workspace
+           stays visible. The starfield itself paints the near-black backdrop. */
+        QWidget#centralWidget {
+            background: transparent;
+            border: none;
+        }
+        QScrollArea#workspaceScrollArea {
+            background: transparent;
+            border: none;
+        }
+        QSplitter#workspaceSplitter {
+            background: transparent;
+            border: none;
+        }
+        QSplitter#workspaceSplitter::handle {
+            background-color: rgba(0, 160, 223, 0.18);
+            width: 6px;
+            margin: 2px 1px;
+            border-radius: 3px;
         }
         #titleBar { background-color: #030712; border-bottom: 1px solid #374151; }
         #titleLabel { color: #62C8FF; font-family: 'Segoe UI Variable', 'Segoe UI'; font-size: 13px; font-weight: 700; letter-spacing: 1.2px; padding-left: 10px; }
@@ -1245,14 +1267,14 @@ QString buildAppStyleSheet(bool darkMode) {
             background: transparent;
         }
         QFrame {
-            background-color: #0D182B;
-            border: 1px solid #183252;
+            background-color: #0A0F1A;
+            border: 1px solid #10405F;
             border-radius: 14px;
         }
         QFrame#heroCard {
             background-color: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                stop:0 #102748, stop:0.55 #0B1830, stop:1 #08111E);
-            border: 1px solid #234C7F;
+                stop:0 #003057, stop:0.55 #071426, stop:1 #04050A);
+            border: 1px solid #00A0DF;
             border-radius: 22px;
         }
         QLabel#heroTitle {
@@ -1267,9 +1289,9 @@ QString buildAppStyleSheet(bool darkMode) {
             font-weight: 500;
         }
         QLabel[badgeRole="chip"] {
-            background-color: rgba(14, 37, 68, 0.95);
+            background-color: #06263B;
             color: #D8EEFF;
-            border: 1px solid #2F6FA6;
+            border: 1px solid #00A0DF;
             border-radius: 999px;
             padding: 7px 14px;
             font-size: 11px;
@@ -1284,8 +1306,8 @@ QString buildAppStyleSheet(bool darkMode) {
         QFrame#card4,
         QTabWidget#siteTabs,
         QFrame#outputPanel {
-            background-color: rgba(10, 24, 43, 0.96);
-            border: 1px solid #183252;
+            background-color: #0A0F1A;
+            border: 1px solid #10405F;
             border-radius: 18px;
         }
         QLabel#panelTitle {
@@ -1299,8 +1321,8 @@ QString buildAppStyleSheet(bool darkMode) {
             font-weight: 500;
         }
         QLineEdit, QPlainTextEdit, QTreeWidget, QListWidget, QComboBox {
-            background-color: #060D19;
-            border: 1px solid #26486F;
+            background-color: #04050A;
+            border: 1px solid #1B5A80;
             border-radius: 12px;
             color: #F9FAFB;
             padding: 8px 12px;
@@ -1309,20 +1331,20 @@ QString buildAppStyleSheet(bool darkMode) {
             selection-background-color: #1F6DB2;
         }
         QLineEdit:focus, QPlainTextEdit:focus, QComboBox:focus {
-            border: 1px solid #62C8FF;
-            background-color: #081425;
+            border: 1px solid #00A0DF;
+            background-color: #061018;
         }
         QComboBox QAbstractItemView {
-            background-color: #081425;
+            background-color: #061018;
             color: #F9FAFB;
-            selection-background-color: #1F6DB2;
-            border: 1px solid #26486F;
+            selection-background-color: #0077A8;
+            border: 1px solid #1B5A80;
             outline: none;
             padding: 6px;
         }
         QPlainTextEdit#text_output {
-            background-color: #050B14;
-            border: 1px solid #24486F;
+            background-color: #04050A;
+            border: 1px solid #1B5A80;
             border-radius: 16px;
             padding: 14px;
             selection-background-color: #1F6DB2;
@@ -1347,70 +1369,70 @@ QString buildAppStyleSheet(bool darkMode) {
             width: 18px;
             height: 18px;
             border-radius: 5px;
-            border: 2px solid #7BA8D1;
-            background-color: #060D19;
+            border: 2px solid #4C8FB5;
+            background-color: #04050A;
         }
         QCheckBox::indicator:hover {
-            border: 2px solid #62C8FF;
-            background-color: #0E1E33;
+            border: 2px solid #00A0DF;
+            background-color: #06263B;
         }
         QCheckBox::indicator:checked {
-            background-color: #1F6DB2;
-            border: 2px solid #62C8FF;
+            background-color: #00A0DF;
+            border: 2px solid #6FD3FF;
         }
         QPushButton#btn_wizard, QPushButton#btn_generate, QPushButton#btn_generate_cisco, QPushButton#btn_test_ssh, QPushButton#btn_open_mremote, QPushButton#btn_deploy, QPushButton#btn_update_app {
-            background-color: #1F6DB2;
+            background-color: #0077A8;
             color: #FFFFFF;
             font-weight: 800;
-            border: 1px solid #4EA6E4;
+            border: 1px solid #00A0DF;
             border-radius: 12px;
             padding: 10px 16px;
         }
         QPushButton#btn_wizard:hover, QPushButton#btn_generate:hover, QPushButton#btn_generate_cisco:hover, QPushButton#btn_test_ssh:hover, QPushButton#btn_open_mremote:hover, QPushButton#btn_deploy:hover, QPushButton#btn_update_app:hover {
-            background-color: #2A84D5;
-            border: 1px solid #71D0FF;
+            background-color: #00A0DF;
+            border: 1px solid #6FD3FF;
         }
         QPushButton#btn_deploy:disabled, QPushButton#btn_test_ssh:disabled, QPushButton#btn_open_mremote:disabled, QPushButton#btn_update_app:disabled {
-            background-color: #22364E;
-            color: #5D7895;
-            border: 1px solid #2A415C;
+            background-color: #101820;
+            color: #4E6A7C;
+            border: 1px solid #1B2A36;
         }
         QPushButton#btn_remove, QPushButton#btn_copy, QPushButton#btn_reset {
-            background-color: #132942;
+            background-color: #07202F;
             color: #EAF5FF;
             font-weight: 700;
-            border: 1px solid #2A4C74;
+            border: 1px solid #10405F;
             border-radius: 12px;
             padding: 10px 16px;
         }
         QPushButton#btn_remove:hover { background-color: #B93B47; border: 1px solid #F77D86; }
         QPushButton#btn_copy:hover, QPushButton#btn_reset:hover {
-            background-color: #1A3552;
-            border: 1px solid #4E80AF;
+            background-color: #003057;
+            border: 1px solid #00A0DF;
         }
         QTabWidget::pane {
-            border: 1px solid #224468;
+            border: 1px solid #10405F;
             border-radius: 16px;
-            background: rgba(6, 13, 25, 0.72);
+            background: #0A0F1A;
             top: 0px;
         }
         QTabBar#modeSwitcher::tab {
-            background-color: rgba(8, 20, 37, 0.95);
+            background-color: #06131E;
             color: #95ABC4;
             padding: 8px 18px;
             font-weight: 800;
-            border: 1px solid #294B72;
+            border: 1px solid #10405F;
             border-radius: 999px;
             margin-right: 8px;
             min-width: 88px;
         }
         QTabBar#modeSwitcher::tab:selected {
-            background-color: #1F6DB2;
+            background-color: #00A0DF;
             color: #FFFFFF;
-            border: 1px solid #62C8FF;
+            border: 1px solid #6FD3FF;
         }
         QTabBar#modeSwitcher::tab:hover:!selected {
-            background-color: #112540;
+            background-color: #003057;
             color: #E5F5FF;
         }
         QTabBar::tab {
@@ -1422,12 +1444,12 @@ QString buildAppStyleSheet(bool darkMode) {
         }
         QTabBar::tab:selected {
             color: #F5FAFF;
-            border-bottom: 2px solid #62C8FF;
+            border-bottom: 2px solid #00A0DF;
         }
         QStatusBar {
             color: #8AD7FF;
-            background-color: #050B14;
-            border-top: 1px solid #17304D;
+            background-color: #04050A;
+            border-top: 1px solid #10405F;
             font-weight: 700;
         }
         )";
@@ -2941,14 +2963,24 @@ ACS_Wynn_Builder::ACS_Wynn_Builder(QWidget* parent)
     setWindowIcon(QIcon(":/logo.png"));
     setWindowTitle("ACS Hotel WiFi Builder");
     if (QWidget* contentRoot = takeCentralWidget()) {
-        QScrollArea* workspaceScrollArea = new QScrollArea(this);
+        workspaceScrollArea = new QScrollArea(this);
+        workspaceScrollArea->setObjectName("workspaceScrollArea");
         workspaceScrollArea->setWidgetResizable(true);
         workspaceScrollArea->setFrameShape(QFrame::NoFrame);
         workspaceScrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
         workspaceScrollArea->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
         workspaceScrollArea->setWidget(contentRoot);
         setCentralWidget(workspaceScrollArea);
+
+        // Let the animated starfield show through the workspace chrome.
+        // The stylesheet already marks these transparent; clearing
+        // autoFillBackground makes sure no palette brush paints over it.
+        contentRoot->setAutoFillBackground(false);
+        if (QWidget* viewport = workspaceScrollArea->viewport())
+            viewport->setAutoFillBackground(false);
     }
+
+    installStarfieldBackground();
 
     const QRect available = screen() ? screen()->availableGeometry() : QRect(0, 0, 1280, 720);
     const int targetWidth = qBound(860, available.width() - 28, 980);
@@ -3643,6 +3675,11 @@ ACS_Wynn_Builder::ACS_Wynn_Builder(QWidget* parent)
         ciscoLoginFrame->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Minimum);
     updateApGroupSelectionSummary();
     refreshWorkspaceSummary();
+
+    // Restore the non-sensitive parts of the previous session (tabs, usernames,
+    // window geometry). Done last so nothing above overwrites it.
+    restoreSessionSettings();
+
     QTimer::singleShot(1200, this, [this]() { checkForUpdates(); });
 }
 
@@ -4909,15 +4946,104 @@ void ACS_Wynn_Builder::applyProfilePreset(const QString& presetName, bool persis
     refreshWorkspaceSummary();
 }
 
+// Places the animated Spectrum starfield behind the whole workspace.
+// It parents to the scroll area viewport so it stays pinned while the
+// workspace scrolls, and is lowered so every card/control paints above it.
+void ACS_Wynn_Builder::installStarfieldBackground() {
+    if (starfieldBackground || !workspaceScrollArea)
+        return;
+
+    QWidget* host = workspaceScrollArea->viewport();
+    if (!host)
+        return;
+
+    starfieldBackground = new StarfieldBackground(host);
+    starfieldBackground->followGeometryOf(host);
+    starfieldBackground->lower();
+    starfieldBackground->show();
+}
+
 void ACS_Wynn_Builder::applyAdaptiveTheme() {
-    const QPalette palette = this->palette();
-    const bool darkMode = palette.color(QPalette::Window).lightness() < 128;
+    // The starfield look is the intended product design, so the dark theme is
+    // now the default regardless of the host OS palette. The light stylesheet
+    // is intentionally left intact in buildAppStyleSheet() so this is a
+    // one-line revert if it ever needs to come back.
+    const bool darkMode = true;
 
     setStyleSheet(buildAppStyleSheet(darkMode));
 
     if (ui && ui->mainLayout) {
         ui->mainLayout->setSpacing(darkMode ? 8 : 6);
     }
+
+    if (starfieldBackground) {
+        starfieldBackground->setAnimationEnabled(darkMode);
+        starfieldBackground->setVisible(darkMode);
+        if (darkMode)
+            starfieldBackground->lower();
+    }
+}
+
+// ====================================================
+// SESSION PERSISTENCE (non-sensitive values only)
+// ====================================================
+
+void ACS_Wynn_Builder::saveSessionSettings() const {
+    QSettings settings("ACS", "ACS Tool");
+
+    settings.setValue("ui/window_geometry", saveGeometry());
+
+    if (modeTabs)
+        settings.setValue("ui/mode_tab", modeTabs->currentIndex());
+    if (ui && ui->siteTabs)
+        settings.setValue("ui/site_tab", ui->siteTabs->currentIndex());
+
+    // Usernames only. Passwords are never persisted.
+    if (ui && ui->entry_user)
+        settings.setValue("controllers/aruba_user", ui->entry_user->text().trimmed());
+    if (ciscoControllerUserField)
+        settings.setValue("controllers/cisco_user", ciscoControllerUserField->text().trimmed());
+}
+
+void ACS_Wynn_Builder::restoreSessionSettings() {
+    QSettings settings("ACS", "ACS Tool");
+
+    // Usernames. The Aruba and Cisco username fields mirror each other, so a
+    // single restore is enough; fall back to whichever key holds a value.
+    QString savedUser = settings.value("controllers/aruba_user").toString().trimmed();
+    if (savedUser.isEmpty())
+        savedUser = settings.value("controllers/cisco_user").toString().trimmed();
+    if (!savedUser.isEmpty()) {
+        if (ui && ui->entry_user && ui->entry_user->text().trimmed().isEmpty())
+            ui->entry_user->setText(savedUser);
+        if (ciscoControllerUserField && ciscoControllerUserField->text().trimmed().isEmpty())
+            ciscoControllerUserField->setText(savedUser);
+    }
+
+    // Tabs.
+    if (ui && ui->siteTabs) {
+        bool ok = false;
+        const int siteIndex = settings.value("ui/site_tab", -1).toInt(&ok);
+        if (ok && siteIndex >= 0 && siteIndex < ui->siteTabs->count())
+            ui->siteTabs->setCurrentIndex(siteIndex);
+    }
+    if (modeTabs) {
+        bool ok = false;
+        const int modeIndex = settings.value("ui/mode_tab", -1).toInt(&ok);
+        if (ok && modeIndex >= 0 && modeIndex < modeTabs->count())
+            modeTabs->setCurrentIndex(modeIndex);
+    }
+
+    // Window position/size. restoreGeometry() already refuses geometry that no
+    // longer fits any connected screen.
+    const QByteArray geometry = settings.value("ui/window_geometry").toByteArray();
+    if (!geometry.isEmpty())
+        restoreGeometry(geometry);
+}
+
+void ACS_Wynn_Builder::closeEvent(QCloseEvent* event) {
+    saveSessionSettings();
+    QMainWindow::closeEvent(event);
 }
 
 // ====================================================
@@ -5962,17 +6088,35 @@ void ACS_Wynn_Builder::onDownloadFinished() {
 
 void ACS_Wynn_Builder::mousePressEvent(QMouseEvent* event) {
     // FIX (UI/UX): Expanded drag zone from 40px to 50px for easier grabbing.
+    // The manual move() loop has been replaced with the native Windows move
+    // loop so Aero Snap, snap-to-edge and drag-to-maximise all work again.
     if (event->button() == Qt::LeftButton && event->pos().y() < 50) {
+#if QT_VERSION >= QT_VERSION_CHECK(5, 15, 0)
+        if (QWindow* handle = windowHandle()) {
+            if (handle->startSystemMove()) {
+                event->accept();
+                return;
+            }
+        }
+#endif
+        // Fallback for platforms/back-ends without a system move loop.
         dragPosition = event->globalPosition().toPoint() - frameGeometry().topLeft();
         event->accept();
+        return;
     }
+
+    QMainWindow::mousePressEvent(event);
 }
 
 void ACS_Wynn_Builder::mouseMoveEvent(QMouseEvent* event) {
+    // Only reached when startSystemMove() was unavailable or refused.
     if (event->buttons() & Qt::LeftButton && event->pos().y() < 50) {
         move(event->globalPosition().toPoint() - dragPosition);
         event->accept();
+        return;
     }
+
+    QMainWindow::mouseMoveEvent(event);
 }
 
 
