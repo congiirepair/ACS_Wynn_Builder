@@ -7,6 +7,10 @@ param(
     [string]$Channel = "stable",
     [string]$VersionLabel = "",
     [string]$ArtifactDir = "",
+    # Overrides for the Qt VS Tools targets and the Qt installation. Left empty
+    # they are auto-detected, which is what lets this script build outside the IDE.
+    [string]$QtMsBuildDir = "",
+    [string]$QtInstallDir = "",
     [switch]$SkipZip
 )
 
@@ -139,8 +143,40 @@ Require-Path -PathValue $msbuild -Label "MSBuild"
 Require-Path -PathValue $windeployqt -Label "windeployqt"
 Require-Path -PathValue $solution -Label "Project file"
 
+# The Qt/MSBuild targets and the Qt installation are normally injected by the Qt
+# Visual Studio Tools when the project is built inside the IDE, so a plain shell
+# fails with "no Qt version assigned to project". They have to be passed as global
+# /p: properties - the project file defines QtInstall itself, so an environment
+# variable of the same name is overridden and has no effect.
+$qtMsBuildDir = if (-not [string]::IsNullOrWhiteSpace($QtMsBuildDir)) {
+    $QtMsBuildDir
+} else {
+    Join-Path $env:LOCALAPPDATA "QtMsBuild"
+}
+$qtInstallDir = if (-not [string]::IsNullOrWhiteSpace($QtInstallDir)) {
+    $QtInstallDir
+} elseif ($qtRoot) {
+    $qtRoot
+} else {
+    # windeployqt lives in <qt>\bin, so its grandparent is the Qt installation.
+    Split-Path -Parent (Split-Path -Parent $windeployqt)
+}
+
+$msbuildArgs = @("/p:Configuration=$Configuration", "/p:Platform=$Platform")
+if (Test-Path -LiteralPath $qtMsBuildDir) {
+    $msbuildArgs += "/p:QtMsBuild=$qtMsBuildDir"
+} else {
+    Write-Warning "QtMsBuild directory not found at $qtMsBuildDir; relying on the ambient environment."
+}
+if (Test-Path -LiteralPath $qtInstallDir) {
+    $msbuildArgs += "/p:QtInstall=$qtInstallDir"
+} else {
+    Write-Warning "Qt installation not found at $qtInstallDir; relying on the ambient environment."
+}
+
 Write-Host "Building $solution ($Configuration|$Platform)..."
-& $msbuild $solution "/p:Configuration=$Configuration" "/p:Platform=$Platform"
+Write-Host "  Qt installation: $qtInstallDir"
+& $msbuild $solution $msbuildArgs
 if ($LASTEXITCODE -ne 0) {
     throw "MSBuild failed with exit code $LASTEXITCODE"
 }
