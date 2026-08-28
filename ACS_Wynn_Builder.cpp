@@ -895,6 +895,28 @@ int progressStepForCommandCount(int commandCount)
 {
     return qMax(10, commandCount / 10);
 }
+
+// Every generated Aruba script opens by moving to its site's configuration node
+// ("cd /md/WYNN-ENCORE-CONV" for Wynn, "change-config-node /mm" for Stations).
+// That line is site policy, so it doubles as the script's own statement of which
+// property it was built for - which is what lets a deploy prove the script in the
+// output panel belongs to the controller it is about to be pushed to. Works on a
+// pasted script too, unlike anything tracked alongside the text.
+QString arubaScriptConfigNode(const QString& script)
+{
+    // \r is tolerated so a script pasted with CRLF endings still matches.
+    static const QRegularExpression nodeCommand(
+        R"((?im)^[ \t]*(?:cd|change-config-node)[ \t]+(\S+)[ \t\r]*$)");
+    const QRegularExpressionMatch match = nodeCommand.match(script);
+    return match.hasMatch() ? match.captured(1) : QString();
+}
+
+// Site labels are needed both in generated script headers and in the deploy
+// warnings that quote them back, so they come from one place.
+QString siteDisplayName(int siteIdx)
+{
+    return siteIdx == 0 ? QStringLiteral("Wynn & Encore") : QStringLiteral("Stations Casinos");
+}
 }
 
 QList<int> extractCiscoUsedWlanIds(const QString& rawSummary) {
@@ -1060,6 +1082,13 @@ QString buildArubaConfig(const QString& ssid,
 
     QStringList config;
     config << "! ==========================================";
+    // The site, its controller and its config node are stamped into the header so
+    // the script says out loud which property it belongs to - the AP groups below
+    // are only meaningful on that one controller.
+    config << "! TARGET SITE: " + siteDisplayName(siteIdx);
+    config << "! TARGET CONTROLLER: "
+        + (siteIdx == 0 ? apData.wynnControllerIp : apData.stationsControllerIp);
+    config << "! CONFIG NODE: " + path;
     config << "! TARGET SSID: " + ssid;
     config << "! TARGET AP GROUPS (" + QString::number(groups.size()) + " Total):";
     for (const QString& g : groups) config << "!   - " + g;
@@ -1126,7 +1155,10 @@ QString buildArubaConfig(const QString& ssid,
     }
 
     config << "end";
-    config << "configuration commit";
+    // "configuration commit" is not a valid command on these AOS 8 nodes - every
+    // controller answered it with "% Invalid input", so it applied nothing and
+    // only ever produced a false failure in the deployment summary. Changes apply
+    // at the node as they are made; "write memory" is what persists them.
     config << "write memory";
 
     return config.join("\n");
@@ -2570,11 +2602,14 @@ void ControllerSessionManager::deployPersistentInternal(QString script, bool all
     for (const QString& summaryLine : deploymentSummaryLines(commandsSent, failures, deployTimer.elapsed()))
         emit logMessage(summaryLine);
 
-    // The session itself is healthy either way, so deployFinished() keeps its
-    // existing success semantics (that flag drives session recovery and the
-    // post-deploy Cisco WLAN refresh). The failure count rides along in the
-    // status message instead.
-    const QString failureSuffix = failures.isEmpty()
+    // FIX (Correctness): success now means the DEPLOYMENT succeeded - every command
+    // was accepted - not merely that the socket survived. A script that failed
+    // partway and still ran "write memory" leaves a partially applied config on the
+    // controller, and reporting that as a clean deploy is how it goes unnoticed.
+    // Session health is tracked separately by connectionStateChanged, which is what
+    // the post-deploy Cisco refresh keys off now.
+    const bool allCommandsAccepted = failures.isEmpty();
+    const QString failureSuffix = allCommandsAccepted
         ? QString()
         : QString(" %1 of %2 commands reported errors - review the deployment log.")
               .arg(failures.size())
@@ -2599,7 +2634,9 @@ void ControllerSessionManager::deployPersistentInternal(QString script, bool all
 
         if (connected && currentIp == reconnectIp && currentUser == reconnectUser && currentCiscoMode == reconnectCiscoMode) {
             emit logMessage(">>> " + controllerLabel + " session restored after deployment.");
-            emit deployFinished(true, controllerLabel + " deployment complete. Session reconnected and ready." + failureSuffix);
+            emit deployFinished(allCommandsAccepted, allCommandsAccepted
+                ? controllerLabel + " deployment complete. Session reconnected and ready."
+                : controllerLabel + " deployment FAILED." + failureSuffix + " Session reconnected.");
             return;
         }
 
@@ -2608,7 +2645,9 @@ void ControllerSessionManager::deployPersistentInternal(QString script, bool all
     }
 
     emit logMessage(">>> " + controllerLabel + " deployment finished on active session.");
-    emit deployFinished(true, controllerLabel + " deployment complete on active session." + failureSuffix);
+    emit deployFinished(allCommandsAccepted, allCommandsAccepted
+        ? controllerLabel + " deployment complete on active session."
+        : controllerLabel + " deployment FAILED." + failureSuffix);
 }
 
 void ControllerSessionManager::checkWlanIdsPersistent() {
@@ -3357,9 +3396,19 @@ void WizardPage6::initializePage() {
     emit completeChanged();
 
     QString script = previewOutput ? previewOutput->toPlainText() : QString();
-    QString ip = field("ip").toString();
-    QString user = field("user").toString();
+    QString ip = field("ip").toString().trimmed();
+    QString user = field("user").toString().trimmed();
     QString pass = field("pass").toString();
+
+    // The Cisco wizard drops its connection page when a session is already open,
+    // and with it the ip/user fields that page registers. Fall back to the live
+    // session's own target so the reuse check below still has an IP to match on.
+    if (ip.isEmpty() && wizardOwner
+        && wizardOwner->hasControllerSessionInMode(deployOptions.useCiscoShellLogin)) {
+        ip = wizardOwner->activeCiscoSessionIp();
+        if (user.isEmpty())
+            user = wizardOwner->activeCiscoSessionUser();
+    }
 
     if (logConnection)
         disconnect(logConnection);
@@ -3375,6 +3424,11 @@ void WizardPage6::initializePage() {
         deployComplete = true;
         emit completeChanged();
     };
+
+    if (ip.isEmpty()) {
+        finishWithError("No controller IP was supplied for this deployment.");
+        return;
+    }
 
     auto startWorkerDeploy = [this, ip, user, pass, script]() {
         SshWorker* worker = new SshWorker(ip, user, pass, script, deployOptions, this);
@@ -3488,15 +3542,27 @@ void WizardPage6::initializePage() {
                 emit completeChanged();
             });
 
-        if (wizardOwner->hasActiveControllerSession(deployOptions.useCiscoShellLogin)) {
+        // Same rule as the main window: the open session is only reused when it
+        // is already logged in to the controller this page is targeting,
+        // otherwise the wizard's chosen IP would be quietly ignored.
+        if (wizardOwner->hasActiveControllerSession(deployOptions.useCiscoShellLogin, ip, user)) {
             sshLogOutput->appendPlainText(
-                deployOptions.useCiscoShellLogin
-                ? ">>> Using the active Cisco session from CONNECT. No new login will be attempted."
-                : ">>> Using the active Aruba session. No new login will be attempted.");
+                QString(deployOptions.useCiscoShellLogin
+                    ? ">>> Using the active Cisco session from CONNECT to %1. No new login will be attempted."
+                    : ">>> Using the active Aruba session to %1. No new login will be attempted.").arg(ip));
             persistentDeployStarted = true;
             QMetaObject::invokeMethod(manager, "deployPersistent", Qt::QueuedConnection,
                 Q_ARG(QString, pendingScript));
             return;
+        }
+
+        if (wizardOwner->hasControllerSessionInMode(deployOptions.useCiscoShellLogin)) {
+            const QString activeIp = wizardOwner->activeCiscoSessionIp();
+            sshLogOutput->appendPlainText(
+                QString(">>> The open %1 session is logged in to %2. Closing it and logging in to %3 for this deploy.")
+                    .arg(deployOptions.useCiscoShellLogin ? "Cisco" : "Aruba",
+                         activeIp.isEmpty() ? QString("another controller") : activeIp,
+                         ip));
         }
 
         runAsyncTrustPreflight([this, manager, ip, user, pass]() {
@@ -3986,6 +4052,13 @@ ACS_Wynn_Builder::ACS_Wynn_Builder(QWidget* parent)
     mirrorLineEditText(ciscoControllerPassField, ui->entry_ssh_pass);
     mirrorLineEditText(ui->entry_ssh_pass, ciscoControllerPassField);
 
+    // Retyping the Cisco controller IP re-runs the session-vs-target comparison,
+    // so DEPLOY greys out the moment the form stops pointing at the open session.
+    if (ui->entry_ip) {
+        connect(ui->entry_ip, &QLineEdit::textChanged, this,
+            [this](const QString&) { updateCiscoConnectionUi(); });
+    }
+
     // Swap the placeholder QListWidgets from the .ui file for live QTreeWidgets.
     if (ui->list_wynn_aps->parentWidget() &&
         ui->list_wynn_aps->parentWidget()->layout())
@@ -4169,7 +4242,12 @@ ACS_Wynn_Builder::ACS_Wynn_Builder(QWidget* parent)
                 deployProgressBar->hide();
             if (!success)
                 appendOutputText(">>> ERROR: " + message, "Deployment Console");
-            else if (ciscoSessionConnected && ciscoSessionIsCiscoMode) {
+
+            // Gated on the live session rather than on `success`: a deploy where
+            // some commands were rejected is exactly when you most want to see
+            // what actually landed on the controller. If the session had died,
+            // connectionStateChanged would already have cleared these flags.
+            if (ciscoSessionConnected && ciscoSessionIsCiscoMode) {
                 pendingPostDeployCiscoWlanRefresh = true;
                 if (btnCheckWlanIds)
                     btnCheckWlanIds->setEnabled(false);
@@ -4315,8 +4393,31 @@ bool ACS_Wynn_Builder::hasActiveCiscoSession() const {
     return ciscoSessionConnected && ciscoSessionIsCiscoMode;
 }
 
-bool ACS_Wynn_Builder::hasActiveControllerSession(bool isCiscoMode) const {
+bool ACS_Wynn_Builder::hasControllerSessionInMode(bool isCiscoMode) const {
     return ciscoSessionConnected && ciscoSessionIsCiscoMode == isCiscoMode;
+}
+
+// FIX (Correctness): matching on the mode alone let a live Aruba session survive
+// a site-tab switch, so a Wynn & Encore script was pushed down the socket that
+// was still logged in to the Stations controller. A session is only reusable
+// when it is already logged in to the controller this deploy resolved to.
+bool ACS_Wynn_Builder::hasActiveControllerSession(bool isCiscoMode,
+    const QString& expectedIp,
+    const QString& expectedUser) const {
+    if (!hasControllerSessionInMode(isCiscoMode))
+        return false;
+
+    const QString wantedIp = normalizedControllerIdentity(expectedIp);
+    if (wantedIp.isEmpty() || normalizedControllerIdentity(ciscoSessionIp) != wantedIp)
+        return false;
+
+    // An empty username means "whatever this session already authenticated as";
+    // a supplied one has to match or the script would run under the wrong account.
+    const QString wantedUser = normalizedControllerIdentity(expectedUser);
+    if (!wantedUser.isEmpty() && normalizedControllerIdentity(ciscoSessionUser) != wantedUser)
+        return false;
+
+    return true;
 }
 
 QString ACS_Wynn_Builder::activeCiscoSessionIp() const {
@@ -4433,9 +4534,21 @@ void ACS_Wynn_Builder::refreshWorkspaceSummary() {
     if (siteBadgeLabel)
         siteBadgeLabel->setText(QString("Scope  %1  |  %2 groups").arg(siteName).arg(selectedGroupCount));
     if (sessionBadgeLabel) {
-        QString sessionText = isCiscoMode
-            ? (hasActiveCiscoSession() ? "Session  Connected" : "Session  Awaiting controller connect")
-            : "Session  Direct Aruba deploy";
+        // FIX (Correctness): the Aruba branch used to be a fixed string, so a live
+        // Aruba session - and the controller it is bound to - was invisible. It now
+        // reports the real session, which is what makes a stale target noticeable.
+        QString sessionText;
+        if (isCiscoMode) {
+            sessionText = hasActiveCiscoSession()
+                ? "Session  Connected  " + ciscoSessionIp
+                : "Session  Awaiting controller connect";
+        }
+        else if (hasControllerSessionInMode(false)) {
+            sessionText = "Session  Aruba session open  " + ciscoSessionIp;
+        }
+        else {
+            sessionText = "Session  Direct Aruba deploy";
+        }
         sessionBadgeLabel->setText(sessionText);
     }
 }
@@ -4443,6 +4556,13 @@ void ACS_Wynn_Builder::refreshWorkspaceSummary() {
 void ACS_Wynn_Builder::updateCiscoConnectionUi() {
     const bool isCiscoMode = modeTabs && modeTabs->currentIndex() == 1;
     const bool hasCiscoSession = isCiscoMode && ciscoSessionConnected && ciscoSessionIsCiscoMode;
+    // A connected session that is logged in to a different controller than the
+    // form targets must not enable DEPLOY or the WLAN-ID probe: both would run
+    // against the wrong box while the status line claimed everything was fine.
+    const QString ciscoTargetIp = ui->entry_ip ? ui->entry_ip->text().trimmed() : QString();
+    const bool ciscoSessionMatchesTarget = hasCiscoSession
+        && !ciscoTargetIp.isEmpty()
+        && normalizedControllerIdentity(ciscoSessionIp) == normalizedControllerIdentity(ciscoTargetIp);
 
     if (ui->btn_test_ssh) {
         ui->btn_test_ssh->setVisible(isCiscoMode);
@@ -4450,7 +4570,7 @@ void ACS_Wynn_Builder::updateCiscoConnectionUi() {
     }
     if (btnCheckWlanIds) {
         btnCheckWlanIds->setVisible(isCiscoMode);
-        btnCheckWlanIds->setEnabled(hasCiscoSession);
+        btnCheckWlanIds->setEnabled(ciscoSessionMatchesTarget);
     }
     if (btnSelectApGroups) {
         btnSelectApGroups->setVisible(true);
@@ -4460,14 +4580,19 @@ void ACS_Wynn_Builder::updateCiscoConnectionUi() {
         ui->btn_generate_cisco->setEnabled(true);
     }
     if (ui->btn_deploy) {
-        ui->btn_deploy->setEnabled(isCiscoMode ? hasCiscoSession : true);
+        ui->btn_deploy->setEnabled(isCiscoMode ? ciscoSessionMatchesTarget : true);
     }
     if (ciscoDetailsFrame) {
         ciscoDetailsFrame->setEnabled(true);
     }
     if (ciscoConnectionStatusLabel) {
         ciscoConnectionStatusLabel->setVisible(isCiscoMode);
-        if (hasCiscoSession) {
+        if (hasCiscoSession && !ciscoSessionMatchesTarget) {
+            ciscoConnectionStatusLabel->setText(
+                "Cisco Session Status: Connected to " + ciscoSessionIp +
+                ", but this form targets " + (ciscoTargetIp.isEmpty() ? QString("<no IP>") : ciscoTargetIp) +
+                ". Click DISCONNECT, then CONNECT to the target before deploying.");
+        } else if (hasCiscoSession) {
             ciscoConnectionStatusLabel->setText(
                 "Cisco Session Status: Connected to " + ciscoSessionIp +
                 " as " + (ciscoSessionUser.isEmpty() ? QString("<unknown user>") : ciscoSessionUser));
@@ -4512,11 +4637,15 @@ QStringList ACS_Wynn_Builder::getSelectedGroups() {
     QTreeWidget* activeTree = (idx == 0) ? tree_wynn : tree_stations;
     QStringList selectedGroups = { "default" };
 
-    for (int i = 0; i < activeTree->topLevelItemCount(); ++i) {
-        QTreeWidgetItem* parent = activeTree->topLevelItem(i);
-        for (int j = 0; j < parent->childCount(); ++j) {
-            if (parent->child(j)->checkState(0) == Qt::Checked)
-                selectedGroups << parent->child(j)->data(0, Qt::UserRole).toString();
+    // The trees are built partway through the constructor, so any summary refresh
+    // that lands before that point reads an empty selection instead of crashing.
+    if (activeTree) {
+        for (int i = 0; i < activeTree->topLevelItemCount(); ++i) {
+            QTreeWidgetItem* parent = activeTree->topLevelItem(i);
+            for (int j = 0; j < parent->childCount(); ++j) {
+                if (parent->child(j)->checkState(0) == Qt::Checked)
+                    selectedGroups << parent->child(j)->data(0, Qt::UserRole).toString();
+            }
         }
     }
 
@@ -4728,6 +4857,11 @@ void ACS_Wynn_Builder::on_btn_remove_clicked() {
 
     QStringList config;
     config << "! === REMOVAL SCRIPT FOR: " + ssid + " ===";
+    // Same site stamp as the build script: a removal aimed at the wrong property
+    // is every bit as damaging as a create aimed at the wrong property.
+    config << "! TARGET SITE: " + siteDisplayName(idx);
+    config << "! TARGET CONTROLLER: " + currentArubaControllerIp();
+    config << "! CONFIG NODE: " + path;
     if (idx == 1) config << "change-config-node " + path;
     else          config << "cd " + path;
     config << "configure terminal";
@@ -4741,7 +4875,8 @@ void ACS_Wynn_Builder::on_btn_remove_clicked() {
     config << "no aaa profile \"" + ssid + "\"";
     config << "no aaa authentication dot1x \"" + ssid + "\"";
     config << "end";
-    config << "configuration commit";
+    // Dropped for the same reason as the build script: the controllers reject
+    // "configuration commit" outright, so it never applied anything.
     config << "write memory";
 
     setOutputText(config.join("\n"), "Output");
@@ -4754,7 +4889,6 @@ void ACS_Wynn_Builder::handleSshLog(QString message) {
 
 void ACS_Wynn_Builder::on_btn_deploy_clicked() {
     const bool isCiscoMode = modeTabs && modeTabs->currentIndex() == 1;
-    const bool hasReusableSession = hasActiveControllerSession(isCiscoMode);
     QString script = ui->text_output->toPlainText();
     if (script.isEmpty() || script.contains("PREVIEW")) {
         QMessageBox::warning(this, "Wait!",
@@ -4765,6 +4899,48 @@ void ACS_Wynn_Builder::on_btn_deploy_clicked() {
     QString ip = isCiscoMode ? ui->entry_ip->text().trimmed() : currentArubaControllerIp();
     QString user = ui->entry_user->text().trimmed();
     QString pass = ui->entry_ssh_pass->text();
+
+    if (ip.isEmpty()) {
+        QMessageBox::warning(this, "SSH Error",
+            isCiscoMode
+            ? QString("Please enter the Cisco controller IP address.")
+            : QString("No controller IP is configured for the selected site."));
+        return;
+    }
+
+    // FIX (Correctness): the AP groups and the config node in the script belong to
+    // one property, and the controller is chosen from the site tab at click time -
+    // two independent inputs that a tab switch, an edit, or a paste can pull apart.
+    // The script names its own node, so it is checked against the site being
+    // deployed to and a cross-property push is refused outright.
+    if (!isCiscoMode) {
+        const QString scriptNode = arubaScriptConfigNode(script);
+        const QString expectedNode = currentArubaConfigPath();
+        if (!scriptNode.isEmpty() && scriptNode.compare(expectedNode, Qt::CaseInsensitive) != 0) {
+            const int siteIdx = ui->siteTabs ? ui->siteTabs->currentIndex() : 0;
+            const int scriptSiteIdx = scriptNode.compare(apData.wynnConfigPath, Qt::CaseInsensitive) == 0
+                ? 0
+                : (scriptNode.compare(apData.stationsConfigPath, Qt::CaseInsensitive) == 0 ? 1 : -1);
+            const QString scriptSite = scriptSiteIdx >= 0
+                ? siteDisplayName(scriptSiteIdx)
+                : QString("another property");
+            const QString activeSite = siteDisplayName(siteIdx);
+            QMessageBox::critical(this, "Wrong Property",
+                QString("This script was built for %1 (config node %2).\n\n"
+                        "The %3 tab is selected, so DEPLOY would push it to %4 (%5).\n\n"
+                        "Switch back to the tab the script was built for, or re-select "
+                        "your AP groups and click GENERATE for the active tab.")
+                    .arg(scriptSite, scriptNode, activeSite, ip, expectedNode));
+            this->statusBar()->showMessage("Deployment blocked: the script belongs to a different property.", 6000);
+            return;
+        }
+    }
+
+    // The reuse decision has to happen after the target is resolved, so switching
+    // the site tab forces a fresh login instead of reusing the other site's socket.
+    const bool hasReusableSession = hasActiveControllerSession(isCiscoMode, ip, user);
+    const bool hasMismatchedSession = !hasReusableSession && hasControllerSessionInMode(isCiscoMode);
+
     if (!hasReusableSession && isCiscoMode && user.isEmpty()) {
         QMessageBox::warning(this, "SSH Error", "Please enter the Cisco controller username.");
         return;
@@ -4788,11 +4964,25 @@ void ACS_Wynn_Builder::on_btn_deploy_clicked() {
         10000
     );
 
+    // The target is announced before any branch below, so the transcript always
+    // names the controller that is actually about to be written to - including
+    // on the session-reuse path, which previously logged nothing at all.
+    if (!isCiscoMode) {
+        if (ui->entry_ip && ui->entry_ip->text().trimmed() != ip)
+            ui->entry_ip->setText(ip);
+        if (ui->entry_path && ui->entry_path->text().trimmed() != currentArubaConfigPath())
+            ui->entry_path->setText(currentArubaConfigPath());
+        appendOutputText(
+            QString(">>> Aruba site target resolved from the active tab: %1 (%2)")
+                .arg(ui->siteTabs && ui->siteTabs->currentIndex() == 0 ? "Wynn & Encore" : "Stations Casinos", ip),
+            "Deployment Console");
+    }
+
     if (hasReusableSession) {
         appendOutputText(
-            isCiscoMode
-            ? ">>> Using the active Cisco session from CONNECT. No new login will be attempted."
-            : ">>> Using the active Aruba session. No new login will be attempted.",
+            QString(isCiscoMode
+                ? ">>> Using the active Cisco session from CONNECT to %1. No new login will be attempted."
+                : ">>> Using the active Aruba session to %1. No new login will be attempted.").arg(ip),
             "Deployment Console");
         QMetaObject::invokeMethod(persistentSessionManager, "deployPersistent", Qt::QueuedConnection,
             Q_ARG(QString, script));
@@ -4800,21 +4990,28 @@ void ACS_Wynn_Builder::on_btn_deploy_clicked() {
     }
 
     if (isCiscoMode) {
-        appendOutputText(">>> ERROR: No active Cisco session is connected. Click CONNECT first, then deploy.", "Deployment Console");
+        appendOutputText(hasMismatchedSession
+            ? QString(">>> ERROR: The active Cisco session is logged in to %1, but this deploy targets %2. "
+                      "Click DISCONNECT, then CONNECT to the target before deploying.")
+                  .arg(ciscoSessionIp.isEmpty() ? QString("another controller") : ciscoSessionIp, ip)
+            : QString(">>> ERROR: No active Cisco session is connected. Click CONNECT first, then deploy."),
+            "Deployment Console");
         ui->btn_deploy->setText("DEPLOY");
         updateCiscoConnectionUi();
-        this->statusBar()->showMessage("Connect to Cisco before deploying.", 5000);
+        this->statusBar()->showMessage(hasMismatchedSession
+            ? "The connected Cisco controller does not match the deploy target."
+            : "Connect to Cisco before deploying.", 5000);
         return;
     }
 
-    if (ui->entry_ip && ui->entry_ip->text().trimmed() != ip)
-        ui->entry_ip->setText(ip);
-    if (ui->entry_path && ui->entry_path->text().trimmed() != currentArubaConfigPath())
-        ui->entry_path->setText(currentArubaConfigPath());
-    appendOutputText(
-        QString(">>> Aruba site target resolved from the active tab: %1 (%2)")
-            .arg(ui->siteTabs && ui->siteTabs->currentIndex() == 0 ? "Wynn & Encore" : "Stations Casinos", ip),
-        "Deployment Console");
+    // A live Aruba session pointed somewhere else is not silently reused; the
+    // connect below tears it down and logs in to the resolved controller instead.
+    if (hasMismatchedSession) {
+        appendOutputText(
+            QString(">>> The open Aruba session is logged in to %1. Closing it and logging in to %2 for this deploy.")
+                .arg(ciscoSessionIp.isEmpty() ? QString("another controller") : ciscoSessionIp, ip),
+            "Deployment Console");
+    }
 
     DeploymentOptions deployOptions;
     deployOptions.sendInitialEnter = isCiscoMode;
@@ -5351,10 +5548,37 @@ void ACS_Wynn_Builder::on_siteTabs_currentChanged(int index) {
     }
 
     ui->siteTabs->setStyleSheet(siteTheme);
+
+    // FIX (Correctness): the site tab is the Aruba target selector, so an open
+    // Aruba session that points at the site we just left is no longer valid.
+    // Dropping it here keeps the session state honest instead of leaving a socket
+    // to the previous controller alive behind an IP field that says otherwise.
+    dropStaleArubaSession();
+
     updateBuyoutOptionsUi();
     if (!modeTabs || modeTabs->currentIndex() == 0)
         updateLivePreview();
     refreshWorkspaceSummary();
+}
+
+// Closes a live Aruba session whose controller no longer matches the selected
+// site. A Cisco session is left alone: it is owned by the CONNECT button and is
+// unrelated to the Aruba site tabs.
+void ACS_Wynn_Builder::dropStaleArubaSession() {
+    if (!persistentSessionManager || !hasControllerSessionInMode(false))
+        return;
+
+    const QString target = currentArubaControllerIp();
+    if (normalizedControllerIdentity(ciscoSessionIp) == normalizedControllerIdentity(target))
+        return;
+
+    // Reported on the status bar rather than the output panel: the panel is about
+    // to be repainted with the new site's live preview anyway.
+    this->statusBar()->showMessage(
+        QString("Site changed. Closed the Aruba session to %1; the next deploy logs in to %2.")
+            .arg(ciscoSessionIp.isEmpty() ? QString("the previous controller") : ciscoSessionIp, target),
+        6000);
+    QMetaObject::invokeMethod(persistentSessionManager, "disconnectPersistent", Qt::QueuedConnection);
 }
 
 QString ACS_Wynn_Builder::currentArubaControllerIp() const {
@@ -5438,7 +5662,6 @@ void ACS_Wynn_Builder::syncModeUi() {
     if (ui->entry_user) ui->entry_user->setVisible(!isCiscoMode);
     if (ui->label_pass) ui->label_pass->setVisible(!isCiscoMode);
     if (ui->entry_ssh_pass) ui->entry_ssh_pass->setVisible(!isCiscoMode);
-    updateCiscoConnectionUi();
 
     if (ciscoFrame)
         ciscoFrame->setVisible(isCiscoMode);
@@ -5446,14 +5669,30 @@ void ACS_Wynn_Builder::syncModeUi() {
         ciscoLoginFrame->setVisible(isCiscoMode);
 
     if (isCiscoMode) {
-        ui->entry_ip->setText(apData.ciscoControllerIp);
+        // A live session owns the target: re-entering Cisco mode must not snap the
+        // field back to the configured default while a socket to a different
+        // controller is still open, or the form and the session would disagree.
+        ui->entry_ip->setText(hasControllerSessionInMode(true) && !ciscoSessionIp.isEmpty()
+            ? ciscoSessionIp
+            : apData.ciscoControllerIp);
         ui->entry_ip->setReadOnly(true);
+        ui->entry_ip->setToolTip("Cisco controller IP. Edit it in the Cisco connection panel below.");
     }
     else {
-        ui->entry_ip->setReadOnly(false);
+        // FIX (Correctness): the Aruba target is owned by the site tab and the
+        // deploy path reads it from there, so an editable field here would only
+        // let the user type an IP that is then silently discarded - the same
+        // reason entry_path is read-only.
+        ui->entry_ip->setReadOnly(true);
+        ui->entry_ip->setToolTip("Controller IP is selected by the site tab above.");
         syncArubaTargetFields();
         on_siteTabs_currentChanged(ui->siteTabs->currentIndex());
     }
+
+    // Runs after entry_ip holds the mode's target, so the session-vs-target
+    // comparison inside it is made against the IP the user is actually looking at.
+    updateCiscoConnectionUi();
+
     setMinimumHeight(minimumWindowHeight);
     updateBuyoutOptionsUi();
     updateApGroupSelectionSummary();

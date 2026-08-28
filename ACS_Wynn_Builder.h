@@ -346,7 +346,13 @@ public:
     ACS_Wynn_Builder(QWidget* parent = nullptr);
     ~ACS_Wynn_Builder();
     bool hasActiveCiscoSession() const;
-    bool hasActiveControllerSession(bool isCiscoMode) const;
+    // Reuse is keyed on the resolved controller, never on the mode alone: an open
+    // socket to the previous site's controller must not be handed a script that
+    // was built for the site the user has since switched to.
+    bool hasActiveControllerSession(bool isCiscoMode,
+        const QString& expectedIp,
+        const QString& expectedUser = QString()) const;
+    bool hasControllerSessionInMode(bool isCiscoMode) const;
     QString activeCiscoSessionIp() const;
     QString activeCiscoSessionUser() const;
     QString defaultCiscoControllerIp() const;
@@ -519,6 +525,9 @@ private:
     QString currentArubaControllerIp() const;
     QString currentArubaConfigPath() const;
     void syncArubaTargetFields();
+    // Tears down an open Aruba session whose controller no longer matches the
+    // selected site tab, so the session can never outlive the target it was for.
+    void dropStaleArubaSession();
     void syncModeUi();
     // Repaints the toolbar chrome in the active vendor's colours (Aruba orange
     // vs Cisco blue), mirroring the per-site theming in on_siteTabs_currentChanged.
