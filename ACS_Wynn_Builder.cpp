@@ -6215,15 +6215,22 @@ void ACS_Wynn_Builder::setupKeyboardShortcuts() {
 // SESSION PERSISTENCE (non-sensitive values only)
 // ====================================================
 
+// FIX (Correctness): every launch now starts from a clean form.
+//
+// Restoring the AP-group selections meant last session's groups were silently
+// re-checked behind a freshly typed SSID, so GENERATE quietly produced a script
+// for groups the user had not picked - which is why hitting RESET first and
+// re-entering everything "fixed" a deploy. The site and mode tabs were restored
+// for the same reason and decide which controller is written to, so they are no
+// longer carried over either: the app always opens on Aruba / Wynn & Encore and
+// the target has to be chosen deliberately.
+//
+// Only things that cannot change what gets deployed, or where, are kept: window
+// geometry and the controller usernames.
 void ACS_Wynn_Builder::saveSessionSettings() const {
     QSettings settings("ACS", "ACS Tool");
 
     settings.setValue("ui/window_geometry", saveGeometry());
-
-    if (modeTabs)
-        settings.setValue("ui/mode_tab", modeTabs->currentIndex());
-    if (ui && ui->siteTabs)
-        settings.setValue("ui/site_tab", ui->siteTabs->currentIndex());
 
     // Usernames only. Passwords are never persisted.
     if (ui && ui->entry_user)
@@ -6231,29 +6238,6 @@ void ACS_Wynn_Builder::saveSessionSettings() const {
     if (ciscoControllerUserField)
         settings.setValue("controllers/cisco_user", ciscoControllerUserField->text().trimmed());
 
-    // Checked AP groups, stored by group NAME (never by row index) so an edited
-    // ap_groups.json can never map a saved selection onto the wrong group.
-    auto checkedGroupNames = [](QTreeWidget* tree) {
-        QStringList names;
-        if (!tree)
-            return names;
-        for (int i = 0; i < tree->topLevelItemCount(); ++i) {
-            QTreeWidgetItem* parent = tree->topLevelItem(i);
-            for (int j = 0; j < parent->childCount(); ++j) {
-                QTreeWidgetItem* child = parent->child(j);
-                if (child->checkState(0) == Qt::Checked) {
-                    const QString name = child->data(0, Qt::UserRole).toString();
-                    if (!name.isEmpty())
-                        names << name;
-                }
-            }
-        }
-        return names;
-    };
-
-    settings.setValue("ap_groups/checked_wynn", checkedGroupNames(tree_wynn));
-    settings.setValue("ap_groups/checked_stations", checkedGroupNames(tree_stations));
-    settings.setValue("ap_groups/checked_cisco", checkedGroupNames(tree_cisco_wynn));
 }
 
 void ACS_Wynn_Builder::restoreSessionSettings() {
@@ -6271,43 +6255,22 @@ void ACS_Wynn_Builder::restoreSessionSettings() {
             ciscoControllerUserField->setText(savedUser);
     }
 
-    // Tabs.
-    if (ui && ui->siteTabs) {
-        bool ok = false;
-        const int siteIndex = settings.value("ui/site_tab", -1).toInt(&ok);
-        if (ok && siteIndex >= 0 && siteIndex < ui->siteTabs->count())
-            ui->siteTabs->setCurrentIndex(siteIndex);
+    // Tabs and AP-group selections are deliberately NOT restored - see
+    // saveSessionSettings(). The constructor's on_btn_reset_clicked() leaves the
+    // form clean and nothing here is allowed to undo that, so every launch starts
+    // on Aruba / Wynn & Encore with no groups checked and the target chosen by
+    // hand.
+    //
+    // The keys earlier versions wrote are dropped here rather than on save, so an
+    // upgraded install is cleaned up on first launch instead of waiting for a
+    // shutdown that may never happen cleanly.
+    for (const QString& retiredKey : { QStringLiteral("ui/mode_tab"),
+                                       QStringLiteral("ui/site_tab"),
+                                       QStringLiteral("ap_groups/checked_wynn"),
+                                       QStringLiteral("ap_groups/checked_stations"),
+                                       QStringLiteral("ap_groups/checked_cisco") }) {
+        settings.remove(retiredKey);
     }
-    if (modeTabs) {
-        bool ok = false;
-        const int modeIndex = settings.value("ui/mode_tab", -1).toInt(&ok);
-        if (ok && modeIndex >= 0 && modeIndex < modeTabs->count())
-            modeTabs->setCurrentIndex(modeIndex);
-    }
-
-    // Checked AP groups. Matched by name, so a group that has since been renamed
-    // or dropped from ap_groups.json is silently skipped rather than crashing or
-    // checking the wrong row. Runs after populateTree(), which the constructor
-    // guarantees by calling restoreSessionSettings() last.
-    auto restoreCheckedGroups = [](QTreeWidget* tree, const QStringList& names) {
-        if (!tree || names.isEmpty())
-            return;
-        const QSet<QString> wanted(names.begin(), names.end());
-        // Blocked so a long restore does not rebuild the live preview per item.
-        const QSignalBlocker blocker(tree);
-        for (int i = 0; i < tree->topLevelItemCount(); ++i) {
-            QTreeWidgetItem* parent = tree->topLevelItem(i);
-            for (int j = 0; j < parent->childCount(); ++j) {
-                QTreeWidgetItem* child = parent->child(j);
-                if (wanted.contains(child->data(0, Qt::UserRole).toString()))
-                    child->setCheckState(0, Qt::Checked);
-            }
-        }
-    };
-
-    restoreCheckedGroups(tree_wynn, settings.value("ap_groups/checked_wynn").toStringList());
-    restoreCheckedGroups(tree_stations, settings.value("ap_groups/checked_stations").toStringList());
-    restoreCheckedGroups(tree_cisco_wynn, settings.value("ap_groups/checked_cisco").toStringList());
 
     // Window position/size. restoreGeometry() already refuses geometry that no
     // longer fits any connected screen.
