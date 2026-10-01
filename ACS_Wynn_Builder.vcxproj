@@ -128,7 +128,7 @@
     </QtMoc>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <QtRcc Include="..\resource.qrc" />
+    <QtRcc Include="resource.qrc" />
     <QtRcc Include="ACS_Wynn_Builder.qrc" />
     <QtUic Include="ACS_Wynn_Builder.ui" />
     <QtMoc Include="ACS_Wynn_Builder.h" />

@@ -105,7 +105,7 @@ function Write-ChecksumFile {
 
 $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
 $msbuild = if (Test-Path -LiteralPath $vswhere) {
-    $installPath = & $vswhere -latest -products * -requires Microsoft.Component.MSBuild -property installationPath
+    $installPath = & $vswhere -latest -prerelease -products * -requires Microsoft.Component.MSBuild -property installationPath
     if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($installPath)) {
         Join-Path $installPath "MSBuild\Current\Bin\amd64\MSBuild.exe"
     }
