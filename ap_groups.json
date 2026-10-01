@@ -64,13 +64,10 @@
     "stations_misc": [
         ".Boulder-Convention",
         ".FiestaHenderson-Convention",
+        ".Palace-Convention",
         ".SantaFe-Convention",
         ".Sunset-Convention",
         ".Texas-Convention",
-        "Boulder-Convention",
-        "Palace-Convention",
-        "SantaFe-Convention",
-        "Sunset-Convention",
         "default"
     ],
     "wynn_expansion": [

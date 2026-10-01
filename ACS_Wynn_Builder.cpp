@@ -1272,6 +1272,7 @@ QString getCleanName(const QString& raw) {
         {"WYNN|ENCORE-THEATRE",            "Theater"},
         {".Boulder-Convention",            "Boulder Conv"},
         {".FiestaHenderson-Convention",    "Fiesta Henderson Conv"},
+        {".Palace-Convention",             "Palace Conv"},
         {".SantaFe-Convention",            "Santa Fe Conv"},
         {".Sunset-Convention",             "Sunset Conv"},
         {".Texas-Convention",              "Texas Conv"},
@@ -6381,7 +6382,7 @@ void ACS_Wynn_Builder::loadApGroupsFromJson() {
         apData.redRock = { "ACS-RR-Office", "RR-Charleston_Ballroom", "RR-Pavilion_Ballroom", "RR-RedRock_Ballroom", "RR-Registration Area", "RR-Strip_Canyon_View", "RR-Summerlin_Ballroom", "RR-Tbones_Crimson", "RR_Veranda_Rooms" };
         apData.gvr = { "ACS_GVR_Office", "GVR-8200Suite", "GVR-Boardroom", "GVR-Cielos", "GVR-Conv-Libraryrooms", "GVR-Convention", "GVR-DelRoomsandLuna", "GVR-ElViento", "GVR-EstanciaBallroom", "GVR-GrandBallroom", "GVR-GVR PRECON", "GVR-LaCascada", "GVR-LaSirena", "GVR-Tech-Office" };
         apData.durango = { "DUR-Agave-BR-A", "DUR-Agave-BR-B", "DUR-Agave-BR-C", "DUR-Agave-BR-D", "DUR-Agave-BR-E", "DUR-Agave-BR-F", "DUR-Boardroom", "DUR-Cactus", "DUR-Lantana-A", "DUR-Lantana-B", "DUR-Pre-Function", "DUR-Sauguaro", "DURANGO|ACS" };
-        apData.stationsMisc = { ".Boulder-Convention", ".FiestaHenderson-Convention", ".SantaFe-Convention", ".Sunset-Convention", ".Texas-Convention", "Boulder-Convention", "Palace-Convention", "SantaFe-Convention", "Sunset-Convention", "default" };
+        apData.stationsMisc = { ".Boulder-Convention", ".FiestaHenderson-Convention", ".Palace-Convention", ".SantaFe-Convention", ".Sunset-Convention", ".Texas-Convention", "default" };
         apData.ciscoInterfaces = defaultCiscoInterfaceList();
         updateConfig.enabled = true;
         updateConfig.metadataUrl = QUrl("https://api.github.com/repos/congiirepair/ACS_Wynn_Builder/releases/latest");
