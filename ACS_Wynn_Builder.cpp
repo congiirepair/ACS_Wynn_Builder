@@ -1061,6 +1061,14 @@ void ArubaHighlighter::highlightBlock(const QString& text) {
 // SHARED CONFIG BUILDER (FIX: single source of truth)
 // ====================================================
 
+QString defaultArubaRoleForSite(int siteIdx)
+{
+    // ArubaOS role names are case-sensitive and the two controllers do not spell
+    // this one the same way: Stations has 50mbps-Per-User, Wynn 50Mbps-Per-User.
+    return (siteIdx == 0) ? QStringLiteral("50Mbps-Per-User")
+                          : QStringLiteral("50mbps-Per-User");
+}
+
 // FIX (C++ Code): This free function replaces the duplicated config-generation
 // blocks that previously existed independently in buildConfigScript() and
 // WizardPage5::initializePage(). Both now call this function.
@@ -1077,7 +1085,7 @@ QString buildArubaConfig(const QString& ssid,
 {
     QString path = (siteIdx == 0) ? apData.wynnConfigPath : apData.stationsConfigPath;
     QString htProfile = ssid;
-    QString effectiveRole = role.trimmed().isEmpty() ? "50Mbps-Per-User" : role.trimmed();
+    QString effectiveRole = role.trimmed().isEmpty() ? defaultArubaRoleForSite(siteIdx) : role.trimmed();
     const QString effectiveAuth = splashPage ? "Open" : auth;
 
     QStringList config;
@@ -1277,6 +1285,10 @@ QString getCleanName(const QString& raw) {
         {".Sunset-Convention",             "Sunset Conv"},
         {".Texas-Convention",              "Texas Conv"},
         {"RedRock",                        "Red Rock"},
+        // Durango's boardroom AP group is still named DUR-Boardroom on the
+        // controller; the label is spelled Sago so it can't be confused with
+        // GVR's boardroom. Must precede the generic "DUR-" strip below.
+        {"DUR-Boardroom",                  "Sago"},
         {"RR-",                            ""},
         {"RR_",                            ""},
         {"GVR-",                           ""},
@@ -1743,6 +1755,7 @@ QString buildAppStyleSheet(bool darkMode) {
             background-color: #061018;
             color: #F9FAFB;
             selection-background-color: #0077A8;
+            selection-color: #FFFFFF;
             border: 1px solid #1B5A80;
             outline: none;
             padding: 6px;
@@ -1761,6 +1774,17 @@ QString buildAppStyleSheet(bool darkMode) {
         }
         QTreeWidget::item:hover {
             background-color: rgba(56, 107, 164, 0.18);
+        }
+        /* Without an explicit selected rule, Qt resolves the selected row from the
+           palette, which under the forced dark colour scheme paints black text on a
+           black bar - the release chooser and the AP-group trees were unreadable. */
+        QTreeWidget::item:selected {
+            background-color: rgba(0, 160, 223, 0.28);
+            color: #F4FAFF;
+        }
+        QTreeWidget::item:selected:!active {
+            background-color: rgba(0, 160, 223, 0.18);
+            color: #DCEBFA;
         }
         QCheckBox {
             color: #D9E5F4;
@@ -2011,6 +2035,7 @@ QString buildAppStyleSheet(bool darkMode) {
             background-color: #FFFFFF;
             color: #111827;
             selection-background-color: #D6EAFB;
+            selection-color: #0B1A2A;
             border: 1px solid #C7D2E0;
             outline: none;
             padding: 6px;
@@ -2028,6 +2053,14 @@ QString buildAppStyleSheet(bool darkMode) {
         }
         QTreeWidget::item:hover {
             background-color: #EDF5FD;
+        }
+        QTreeWidget::item:selected {
+            background-color: #CFE6FA;
+            color: #0B1A2A;
+        }
+        QTreeWidget::item:selected:!active {
+            background-color: #E3EFFB;
+            color: #0B1A2A;
         }
         QCheckBox {
             color: #203244;
@@ -3296,7 +3329,7 @@ void WizardPage5::initializePage() {
 
     // FIX (C++ Code): Uses the shared buildArubaConfig() — no duplicated logic.
     configPreview->setPlainText(
-        buildArubaConfig(ssid, vlan, auth, psk, "50Mbps-Per-User", false,
+        buildArubaConfig(ssid, vlan, auth, psk, defaultArubaRoleForSite(idx), false,
             field("splash_page_aruba").toBool(),
             idx, selectedGroups, apData)
     );
@@ -3758,7 +3791,7 @@ ACS_Wynn_Builder::ACS_Wynn_Builder(QWidget* parent)
     ui->entry_path->setToolTip("Controller configuration path is managed by site policy.");
     ui->entry_essid->setPlaceholderText("Broadcast SSID");
     ui->entry_vlan->setPlaceholderText("VLAN");
-    ui->entry_role->setPlaceholderText("50Mbps-Per-User");
+    ui->entry_role->setPlaceholderText(defaultArubaRoleForSite(ui->siteTabs ? ui->siteTabs->currentIndex() : 0));
     ui->entry_user->setPlaceholderText("Username");
     ui->entry_ip->setPlaceholderText("Controller IP");
     ui->entry_ssh_pass->setPlaceholderText("Controller password");
@@ -5310,7 +5343,7 @@ void ACS_Wynn_Builder::on_btn_reset_clicked() {
     ui->entry_essid->clear();
     ui->entry_vlan->clear();
     ui->entry_psk->clear();
-    ui->entry_role->setText("50Mbps-Per-User");
+    ui->entry_role->setText(defaultArubaRoleForSite(ui->siteTabs->currentIndex()));
 
     ui->combo_auth->clear();
     ui->combo_auth->addItems({ "WPA2-PSK", "Open" });
@@ -5523,6 +5556,16 @@ void ACS_Wynn_Builder::on_siteTabs_currentChanged(int index) {
     else {
         ui->entry_ip->setText(apData.stationsControllerIp);
         ui->entry_path->setText(apData.stationsConfigPath);
+    }
+
+    // The ROLE default is per site (Stations spells the role with a lower-case
+    // "m"), so a field that still holds the default we just left has to move to
+    // the new site's default. A role typed by hand is never overwritten.
+    if (ui->entry_role) {
+        const QString previousSiteDefault = defaultArubaRoleForSite(index == 0 ? 1 : 0);
+        if (ui->entry_role->text().trimmed() == previousSiteDefault)
+            ui->entry_role->setText(defaultArubaRoleForSite(index));
+        ui->entry_role->setPlaceholderText(defaultArubaRoleForSite(index));
     }
 
     QString siteTheme;
