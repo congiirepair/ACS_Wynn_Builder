@@ -11,6 +11,9 @@ param(
     # they are auto-detected, which is what lets this script build outside the IDE.
     [string]$QtMsBuildDir = "",
     [string]$QtInstallDir = "",
+    # The project asks for v145, which only a Visual Studio 2026 install provides.
+    # Left empty, the script picks the toolset this machine actually has.
+    [string]$PlatformToolset = "",
     [switch]$SkipZip
 )
 
@@ -91,6 +94,26 @@ function New-ZipArtifact {
     Compress-Archive -Path (Join-Path $SourceDir '*') -DestinationPath $ZipPath -CompressionLevel Optimal
 }
 
+# The project file asks for v145 (Visual Studio 2026). On a machine that only has
+# the VS 2022 build tools, MSBuild stops with MSB8020 "The build tools for v145
+# cannot be found", so resolve the toolset by what is installed rather than
+# trusting the project default.
+function Resolve-PlatformToolset {
+    param([string]$Requested)
+
+    if (-not [string]::IsNullOrWhiteSpace($Requested)) {
+        return $Requested.Trim()
+    }
+
+    # v145 ships with Visual Studio 2026 (18.x); v143 ships with VS 2022 (17.x).
+    $vs2026 = Get-ChildItem -Path "C:\Program Files\Microsoft Visual Studio\18\*" -Directory -ErrorAction SilentlyContinue
+    if ($vs2026) {
+        return "v145"
+    }
+
+    return "v143"
+}
+
 function Write-ChecksumFile {
     param(
         [string]$FilePath,
@@ -130,7 +153,22 @@ $buildOutputDir = Join-Path $ProjectRoot "$Platform\$Configuration"
 $exePath = Join-Path $buildOutputDir "ACS_Wynn_Builder.exe"
 $localDependencyDir = Join-Path $ProjectRoot "third_party\libssh\bin"
 $localDeployDir = Join-Path ([Environment]::GetFolderPath("Desktop")) "ACS Deploy"
-$vcRedistDir = Resolve-LatestMatchingPath -Pattern "C:\Program Files\Microsoft Visual Studio\*\*\VC\Redist\MSVC\*\x64\Microsoft.VC*.CRT" -Label "VC++ runtime directory"
+# VS may be installed under Program Files (VS IDE) or Program Files (x86)
+# (Build Tools); try both instead of assuming the IDE layout.
+$vcRedistPatterns = @(
+    "C:\Program Files\Microsoft Visual Studio\*\*\VC\Redist\MSVC\*\x64\Microsoft.VC*.CRT",
+    "C:\Program Files (x86)\Microsoft Visual Studio\*\*\VC\Redist\MSVC\*\x64\Microsoft.VC*.CRT"
+)
+$vcRedistDir = $null
+foreach ($vcRedistPattern in $vcRedistPatterns) {
+    try {
+        $vcRedistDir = Resolve-LatestMatchingPath -Pattern $vcRedistPattern -Label "VC++ runtime directory"
+        break
+    }
+    catch {
+        if ($vcRedistPattern -eq $vcRedistPatterns[-1]) { throw }
+    }
+}
 $stagingRoot = Join-Path ([System.IO.Path]::GetTempPath()) "ACS_Tool_Package"
 $stagingDir = Join-Path $stagingRoot ([Guid]::NewGuid().ToString("N"))
 $effectiveArtifactDir = if (-not [string]::IsNullOrWhiteSpace($ArtifactDir)) {
@@ -163,6 +201,8 @@ $qtInstallDir = if (-not [string]::IsNullOrWhiteSpace($QtInstallDir)) {
 }
 
 $msbuildArgs = @("/p:Configuration=$Configuration", "/p:Platform=$Platform")
+$resolvedToolset = Resolve-PlatformToolset -Requested $PlatformToolset
+$msbuildArgs += "/p:PlatformToolset=$resolvedToolset"
 if (Test-Path -LiteralPath $qtMsBuildDir) {
     $msbuildArgs += "/p:QtMsBuild=$qtMsBuildDir"
 } else {
@@ -175,6 +215,7 @@ if (Test-Path -LiteralPath $qtInstallDir) {
 }
 
 Write-Host "Building $solution ($Configuration|$Platform)..."
+Write-Host "  Platform toolset: $resolvedToolset"
 Write-Host "  Qt installation: $qtInstallDir"
 & $msbuild $solution $msbuildArgs
 if ($LASTEXITCODE -ne 0) {
