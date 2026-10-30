@@ -111,11 +111,6 @@ struct DeploymentOptions {
 // SHARED CONFIG BUILDER (FIX: eliminates duplication)
 // ====================================================
 
-// The per-site default user role. The Stations controller spells the role with a
-// lower-case "m" and Wynn keeps the upper-case form; both are live role names on
-// their own controller, so the default has to follow the site tab.
-QString defaultArubaRoleForSite(int siteIdx);
-
 // FIX (C++ Code): The Aruba CLI generation logic was duplicated verbatim
 // between ACS_Wynn_Builder::buildConfigScript() and WizardPage5::initializePage().
 // It now lives here as a free function consumed by both.
@@ -483,7 +478,7 @@ private:
     QNetworkAccessManager* downloadManager;
 
     QPushButton* btnUpdateApp = nullptr;
-    const QString CURRENT_VERSION = "2.4.4";
+    const QString CURRENT_VERSION = "2.4.1";
     void checkForUpdates(bool interactive = false, bool testingChannel = false);
     QString installedVersionLabel() const;
 
