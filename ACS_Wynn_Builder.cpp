@@ -7181,10 +7181,11 @@ void ACS_Wynn_Builder::onVersionCheckComplete(QNetworkReply* reply) {
             else
                 this->statusBar()->showMessage("Update is available whenever you're ready.", 4000);
         } else if (autoInstall) {
-            // Launch-time path: install it, no prompt. The status line is the only
-            // notice the user gets before the app closes and relaunches itself.
+            // Launch-time path: install it, no prompt, but say so on screen. The
+            // notice doubles as the download progress display.
             this->statusBar()->showMessage(
                 QString("Updating to %1. The app will relaunch when it is ready...").arg(latestVersion), 0);
+            showAutoUpdateProgress(latestVersion);
             startUpdateDownload(resolvedUpdatePackageUrl, true);
         } else {
             this->statusBar()->showMessage(
@@ -7208,12 +7209,70 @@ void ACS_Wynn_Builder::onVersionCheckComplete(QNetworkReply* reply) {
     reply->deleteLater();
 }
 
-// A failed update must never block the app. The launch-time install is silent, so
-// every problem there is a status-bar line; only a user-initiated update gets a
-// dialog, because that click is what asked the question.
+// The launch-time install is announced: the box stays up for the whole download
+// and is the only thing the user has to look at. Closing it cancels this launch's
+// update and leaves the app usable on the installed version.
+void ACS_Wynn_Builder::showAutoUpdateProgress(const QString& version) {
+    closeUpdateProgress();
+    autoUpdateNoticeCancelled = false;
+    updateDownloadedBytes = 0;
+    updateTotalBytes = 0;
+
+    updateProgressDialog = new QProgressDialog(
+        QString("Updating to version %1.\n\nThe app will close and restart by itself when the update is ready.")
+            .arg(version),
+        "Skip for now", 0, 0, this);
+    updateProgressDialog->setWindowTitle("Updating ACS Tool");
+    updateProgressDialog->setWindowModality(Qt::ApplicationModal);
+    updateProgressDialog->setMinimumDuration(0);
+    updateProgressDialog->setAutoClose(false);
+    updateProgressDialog->setAutoReset(false);
+    updateProgressDialog->setMinimumWidth(420);
+    updateProgressDialog->setValue(0);
+    updateProgressDialog->setWindowFlag(Qt::WindowContextHelpButtonHint, false);
+
+    connect(updateProgressDialog, &QProgressDialog::canceled, this, [this]() {
+        autoUpdateNoticeCancelled = true;
+        if (downloadReply)
+            downloadReply->abort();
+        closeUpdateProgress();
+        this->statusBar()->showMessage(
+            "Update skipped. Use UPDATE APP when you are ready to install it.", 8000);
+    });
+
+    updateProgressDialog->show();
+}
+
+void ACS_Wynn_Builder::closeUpdateProgress() {
+    if (!updateProgressDialog)
+        return;
+
+    QProgressDialog* dialog = updateProgressDialog;
+    updateProgressDialog = nullptr;
+    dialog->hide();
+    dialog->deleteLater();
+}
+
+// A failed update must never block the app. On the announced launch-time path the
+// notice disappears and one message says what happened; a user-initiated update
+// gets the usual dialog, because that click is what asked the question.
 void ACS_Wynn_Builder::reportUpdateProblem(const QString& title, const QString& message, bool critical) {
+    const bool noticeWasShowing = updateProgressDialog != nullptr;
+    closeUpdateProgress();
+
     if (quietUpdateInstall) {
+        if (autoUpdateNoticeCancelled) {
+            // The user closed the notice; the status line already said so.
+            return;
+        }
+
         qWarning() << "Updater:" << title << "-" << message;
+        if (noticeWasShowing) {
+            QMessageBox::warning(this, title,
+                message + "\n\nThe installed version keeps working. Try again later or use UPDATE APP.");
+            return;
+        }
+
         this->statusBar()->showMessage("Update not applied. Continuing on the installed version.", 8000);
         return;
     }
@@ -7226,6 +7285,10 @@ void ACS_Wynn_Builder::reportUpdateProblem(const QString& title, const QString& 
 
 void ACS_Wynn_Builder::startUpdateDownload(const QUrl& url, bool quiet) {
     quietUpdateInstall = quiet;
+    updateDownloadedBytes = 0;
+    updateTotalBytes = 0;
+    if (!quiet)
+        closeUpdateProgress();
     const UpdateSecurityConfig& selectedConfig = resolvedUpdateIsTesting ? testingUpdateConfig : updateConfig;
     if (!isTrustedUpdateUrl(selectedConfig, url, resolvedUpdateAllowedHosts)) {
         reportUpdateProblem("Update Blocked",
@@ -7289,8 +7352,26 @@ void ACS_Wynn_Builder::startUpdateDownload(const QUrl& url, bool quiet) {
 }
 
 void ACS_Wynn_Builder::onDownloadReadyRead() {
-    if (downloadFile && downloadReply)
-        downloadFile->write(downloadReply->readAll());
+    if (!downloadFile || !downloadReply)
+        return;
+
+    const QByteArray chunk = downloadReply->readAll();
+    downloadFile->write(chunk);
+    updateDownloadedBytes += chunk.size();
+
+    if (!updateProgressDialog)
+        return;
+
+    // The first chunk may arrive before the size header is read, so switch the
+    // dialog from its busy indicator to a real bar as soon as the total is known.
+    if (updateTotalBytes <= 0) {
+        updateTotalBytes = downloadReply->header(QNetworkRequest::ContentLengthHeader).toLongLong();
+        if (updateTotalBytes > 0)
+            updateProgressDialog->setRange(0, static_cast<int>(updateTotalBytes));
+    }
+    if (updateTotalBytes > 0) {
+        updateProgressDialog->setValue(static_cast<int>(qMin(updateDownloadedBytes, updateTotalBytes)));
+    }
 }
 
 void ACS_Wynn_Builder::onDownloadFinished() {
@@ -7425,6 +7506,15 @@ void ACS_Wynn_Builder::onDownloadFinished() {
         return;
     }
 
+    // Leave the notice up, say the update landed, and let it repaint before quitting
+    // so the last thing on screen is not a frozen progress bar.
+    if (updateProgressDialog) {
+        if (updateProgressDialog->maximum() > 0)
+            updateProgressDialog->setValue(updateProgressDialog->maximum());
+        updateProgressDialog->setLabelText("Update ready. Restarting the app...");
+        updateProgressDialog->setCursor(Qt::WaitCursor);
+        updateProgressDialog->repaint();
+    }
     cleanupUpdateArtifacts();
     this->statusBar()->showMessage("Update downloaded. Restarting to apply update...", 0);
     QApplication::processEvents();

@@ -46,6 +46,7 @@
 #include <QCalendarWidget>
 #include <QDate>
 #include <QStyle>
+#include <QProgressDialog>
 
 #include "ui_ACS_Wynn_Builder.h"
 #include <libssh/libssh.h>
@@ -401,6 +402,10 @@ private slots:
     void startUpdateDownload(const QUrl& url, bool quiet = false);
     void onDownloadReadyRead();
     void onDownloadFinished();
+    // The launch-time install is visible: this box says the app is updating and
+    // doubles as the download progress display.
+    void showAutoUpdateProgress(const QString& version);
+    void closeUpdateProgress();
 
 private:
     Ui::ACS_Wynn_BuilderClass* ui;
@@ -487,7 +492,7 @@ private:
     QNetworkAccessManager* downloadManager;
 
     QPushButton* btnUpdateApp = nullptr;
-    const QString CURRENT_VERSION = "2.4.6";
+    const QString CURRENT_VERSION = "2.4.7";
     // autoInstall makes the launch-time check finish the job: a newer stable
     // release is downloaded, verified and applied without a prompt.
     void checkForUpdates(bool interactive = false, bool testingChannel = false, bool autoInstall = false);
@@ -504,9 +509,15 @@ private:
     QStringList resolvedUpdateAllowedHosts;
     QString resolvedUpdateChannelLabel;
     bool resolvedUpdateIsTesting = false;
-    // True while an update is being applied from the launch-time check. Every
-    // failure below the download is then a status-bar line, never a dialog.
+    // True while an update is being applied from the launch-time check. The notice
+    // dialog is the report surface; a failure closes it with one message.
     bool quietUpdateInstall = false;
+    // The launch-time notice. Visible from the moment a newer release is found
+    // until it is applied, closed by the user, or it fails.
+    QProgressDialog* updateProgressDialog = nullptr;
+    bool autoUpdateNoticeCancelled = false;
+    qint64 updateDownloadedBytes = 0;
+    qint64 updateTotalBytes = 0;
     void reportUpdateProblem(const QString& title, const QString& message, bool critical = true);
 
     QString    buildConfigScript();
