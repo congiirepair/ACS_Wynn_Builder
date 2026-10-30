@@ -392,7 +392,7 @@ private slots:
 
     // Auto-updater slots
     void onVersionCheckComplete(QNetworkReply* reply);
-    void startUpdateDownload(const QUrl& url);
+    void startUpdateDownload(const QUrl& url, bool quiet = false);
     void onDownloadReadyRead();
     void onDownloadFinished();
 
@@ -478,8 +478,10 @@ private:
     QNetworkAccessManager* downloadManager;
 
     QPushButton* btnUpdateApp = nullptr;
-    const QString CURRENT_VERSION = "2.4.1";
-    void checkForUpdates(bool interactive = false, bool testingChannel = false);
+    const QString CURRENT_VERSION = "2.4.5";
+    // autoInstall makes the launch-time check finish the job: a newer stable
+    // release is downloaded, verified and applied without a prompt.
+    void checkForUpdates(bool interactive = false, bool testingChannel = false, bool autoInstall = false);
     QString installedVersionLabel() const;
 
     QNetworkReply* downloadReply = nullptr;
@@ -493,6 +495,10 @@ private:
     QStringList resolvedUpdateAllowedHosts;
     QString resolvedUpdateChannelLabel;
     bool resolvedUpdateIsTesting = false;
+    // True while an update is being applied from the launch-time check. Every
+    // failure below the download is then a status-bar line, never a dialog.
+    bool quietUpdateInstall = false;
+    void reportUpdateProblem(const QString& title, const QString& message, bool critical = true);
 
     QString    buildConfigScript();
     QString    buildCiscoConfigScript();

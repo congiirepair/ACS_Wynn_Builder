@@ -4372,7 +4372,10 @@ ACS_Wynn_Builder::ACS_Wynn_Builder(QWidget* parent)
     // actually restored rather than the default one.
     applyModeBranding();
 
-    QTimer::singleShot(1200, this, [this]() { checkForUpdates(); });
+    // Launch-time check. It installs a newer stable release on its own, so every
+    // installed copy converges without anyone pressing UPDATE APP. Delayed so the
+    // window is on screen and the status line is readable when it fires.
+    QTimer::singleShot(1200, this, [this]() { checkForUpdates(false, false, true); });
 }
 
 ACS_Wynn_Builder::~ACS_Wynn_Builder() {
@@ -6968,12 +6971,17 @@ void ACS_Wynn_Builder::cleanupUpdateArtifacts() {
 // AUTO UPDATER
 // ====================================================
 
-void ACS_Wynn_Builder::checkForUpdates(bool interactive, bool testingChannel) {
+void ACS_Wynn_Builder::checkForUpdates(bool interactive, bool testingChannel, bool autoInstall) {
     UpdateSecurityConfig& selectedConfig = testingChannel ? testingUpdateConfig : updateConfig;
     QPushButton* selectedButton = btnUpdateApp;
     const QString channelLabel = testingChannel ? "testing build" : "latest release";
     const bool showReleaseChooser = interactive;
     const QUrl metadataUrl = showReleaseChooser ? githubReleasesMetadataUrl() : selectedConfig.metadataUrl;
+
+    // One update at a time: an in-flight quiet install owns the staging paths and
+    // the restart, so a second launch-time check must not start a second one.
+    if (autoInstall && quietUpdateInstall)
+        return;
 
     if (selectedButton)
         selectedButton->setEnabled(false);
@@ -7013,6 +7021,7 @@ void ACS_Wynn_Builder::checkForUpdates(bool interactive, bool testingChannel) {
     request.setAttribute(QNetworkRequest::User, testingChannel ? kUpdateChannelTesting : kUpdateChannelStable);
     request.setAttribute(QNetworkRequest::UserMax, interactive);
     request.setAttribute(static_cast<QNetworkRequest::Attribute>(QNetworkRequest::User + 1), showReleaseChooser);
+    request.setAttribute(static_cast<QNetworkRequest::Attribute>(QNetworkRequest::User + 2), autoInstall);
     request.setHeader(QNetworkRequest::UserAgentHeader, "ACS Tool Updater");
     request.setTransferTimeout(kUpdateMetadataTransferTimeoutMs);
     versionCheckManager->get(request);
@@ -7022,6 +7031,7 @@ void ACS_Wynn_Builder::onVersionCheckComplete(QNetworkReply* reply) {
     const bool testingChannel = reply->request().attribute(QNetworkRequest::User).toInt() == kUpdateChannelTesting;
     const bool interactive = reply->request().attribute(QNetworkRequest::UserMax).toBool();
     const bool showReleaseChooser = reply->request().attribute(static_cast<QNetworkRequest::Attribute>(QNetworkRequest::User + 1)).toBool();
+    const bool autoInstall = reply->request().attribute(static_cast<QNetworkRequest::Attribute>(QNetworkRequest::User + 2)).toBool();
     UpdateSecurityConfig& selectedConfig = testingChannel ? testingUpdateConfig : updateConfig;
     QPushButton* selectedButton = btnUpdateApp;
 
@@ -7126,11 +7136,17 @@ void ACS_Wynn_Builder::onVersionCheckComplete(QNetworkReply* reply) {
                 startUpdateDownload(resolvedUpdatePackageUrl);
             else
                 this->statusBar()->showMessage("Update is available whenever you're ready.", 4000);
-            } else {
-                this->statusBar()->showMessage(
-                    "A newer build is available. Click UPDATE APP to choose and install it.",
+        } else if (autoInstall) {
+            // Launch-time path: install it, no prompt. The status line is the only
+            // notice the user gets before the app closes and relaunches itself.
+            this->statusBar()->showMessage(
+                QString("Updating to %1. The app will relaunch when it is ready...").arg(latestVersion), 0);
+            startUpdateDownload(resolvedUpdatePackageUrl, true);
+        } else {
+            this->statusBar()->showMessage(
+                "A newer build is available. Click UPDATE APP to choose and install it.",
                 5000);
-            }
+        }
 
         reply->deleteLater();
         return;
@@ -7148,11 +7164,30 @@ void ACS_Wynn_Builder::onVersionCheckComplete(QNetworkReply* reply) {
     reply->deleteLater();
 }
 
-void ACS_Wynn_Builder::startUpdateDownload(const QUrl& url) {
+// A failed update must never block the app. The launch-time install is silent, so
+// every problem there is a status-bar line; only a user-initiated update gets a
+// dialog, because that click is what asked the question.
+void ACS_Wynn_Builder::reportUpdateProblem(const QString& title, const QString& message, bool critical) {
+    if (quietUpdateInstall) {
+        qWarning() << "Updater:" << title << "-" << message;
+        this->statusBar()->showMessage("Update not applied. Continuing on the installed version.", 8000);
+        return;
+    }
+
+    if (critical)
+        QMessageBox::critical(this, title, message);
+    else
+        QMessageBox::warning(this, title, message);
+}
+
+void ACS_Wynn_Builder::startUpdateDownload(const QUrl& url, bool quiet) {
+    quietUpdateInstall = quiet;
     const UpdateSecurityConfig& selectedConfig = resolvedUpdateIsTesting ? testingUpdateConfig : updateConfig;
     if (!isTrustedUpdateUrl(selectedConfig, url, resolvedUpdateAllowedHosts)) {
-        QMessageBox::warning(this, "Update Blocked",
-            "The update package URL is not trusted. Only allow-listed HTTPS endpoints are permitted.");
+        reportUpdateProblem("Update Blocked",
+            "The update package URL is not trusted. Only allow-listed HTTPS endpoints are permitted.",
+            false);
+        quietUpdateInstall = false;
         return;
     }
 
@@ -7160,12 +7195,14 @@ void ACS_Wynn_Builder::startUpdateDownload(const QUrl& url) {
     const bool packageIsExecutable = packageName.endsWith(".exe", Qt::CaseInsensitive);
 
     this->statusBar()->showMessage("Downloading update package. Please wait...", 0);
-    QMessageBox::information(this,
-        "Updating Application",
-        QString("Version %1 is ready to install as a %2.\n\nThe application will download the release asset, close, replace the installed files, and relaunch automatically.")
-            .arg(resolvedUpdateVersion.isEmpty() ? QString("update") : resolvedUpdateVersion,
-                resolvedUpdateChannelLabel.isEmpty() ? QString("build") : resolvedUpdateChannelLabel));
-    QApplication::processEvents();
+    if (!quiet) {
+        QMessageBox::information(this,
+            "Updating Application",
+            QString("Version %1 is ready to install as a %2.\n\nThe application will download the release asset, close, replace the installed files, and relaunch automatically.")
+                .arg(resolvedUpdateVersion.isEmpty() ? QString("update") : resolvedUpdateVersion,
+                    resolvedUpdateChannelLabel.isEmpty() ? QString("build") : resolvedUpdateChannelLabel));
+        QApplication::processEvents();
+    }
 
     cleanupUpdateArtifacts();
 
@@ -7190,9 +7227,10 @@ void ACS_Wynn_Builder::startUpdateDownload(const QUrl& url) {
         QDir(updateZipPath).removeRecursively();
     downloadFile = new QFile(updateZipPath);
     if (!downloadFile->open(QIODevice::WriteOnly)) {
-        QMessageBox::critical(this, "Update Failed",
+        reportUpdateProblem("Update Failed",
             "The updater could not create the temporary package file.\n\nPath: " + updateZipPath +
             "\nError: " + downloadFile->errorString());
+        quietUpdateInstall = false;
         cleanupUpdateArtifacts();
         return;
     }
@@ -7222,8 +7260,9 @@ void ACS_Wynn_Builder::onDownloadFinished() {
 
     const UpdateSecurityConfig& selectedConfig = resolvedUpdateIsTesting ? testingUpdateConfig : updateConfig;
     if (downloadReply->error() != QNetworkReply::NoError || !isTrustedUpdateUrl(selectedConfig, downloadReply->url(), resolvedUpdateAllowedHosts)) {
-        QMessageBox::critical(this, "Update Failed",
+        reportUpdateProblem("Update Failed",
             "The update download did not complete from a trusted HTTPS source.");
+        quietUpdateInstall = false;
         QFile::remove(updateZipPath);
         cleanupUpdateArtifacts();
         return;
@@ -7232,8 +7271,9 @@ void ACS_Wynn_Builder::onDownloadFinished() {
     QString expectedSha256 = resolvedUpdateSha256.trimmed().toLower();
     expectedSha256.remove(QRegularExpression("\\s+"));
     if (expectedSha256.size() != 64) {
-        QMessageBox::critical(this, "Update Failed",
+        reportUpdateProblem("Update Failed",
             "The secure updater is missing a valid SHA-256 checksum.");
+        quietUpdateInstall = false;
         QFile::remove(updateZipPath);
         cleanupUpdateArtifacts();
         return;
@@ -7247,18 +7287,20 @@ void ACS_Wynn_Builder::onDownloadFinished() {
 
         const QString actualHash = QString::fromLatin1(hash.result().toHex());
         if (actualHash != expectedSha256) {
-            QMessageBox::critical(this, "Update Failed",
+            reportUpdateProblem("Update Failed",
                 "Integrity check failed. The downloaded update file does not match "
                 "the expected checksum and will not be applied.\n\n"
                 "Please download the update manually from GitHub.");
+            quietUpdateInstall = false;
             QFile::remove(updateZipPath);
             cleanupUpdateArtifacts();
             return;
         }
     }
     else {
-        QMessageBox::critical(this, "Update Failed",
+        reportUpdateProblem("Update Failed",
             "The updater could not reopen the downloaded package for checksum validation.");
+        quietUpdateInstall = false;
         QFile::remove(updateZipPath);
         cleanupUpdateArtifacts();
         return;
@@ -7266,8 +7308,9 @@ void ACS_Wynn_Builder::onDownloadFinished() {
 
     QFile updateScript(updateBatchPath);
     if (!updateScript.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        QMessageBox::critical(this, "Update Failed",
+        reportUpdateProblem("Update Failed",
             "The updater could not create the installer script.");
+        quietUpdateInstall = false;
         QFile::remove(updateZipPath);
         cleanupUpdateArtifacts();
         return;
@@ -7330,8 +7373,9 @@ void ACS_Wynn_Builder::onDownloadFinished() {
         << "-ExecutionPolicy" << "Bypass"
         << "-WindowStyle" << "Hidden"
         << "-File" << updateBatchPath)) {
-        QMessageBox::critical(this, "Update Failed",
+        reportUpdateProblem("Update Failed",
             "The updater could not launch the installer script.");
+        quietUpdateInstall = false;
         QFile::remove(updateZipPath);
         QFile::remove(updateBatchPath);
         return;
