@@ -1061,6 +1061,21 @@ void ArubaHighlighter::highlightBlock(const QString& text) {
 // SHARED CONFIG BUILDER (FIX: single source of truth)
 // ====================================================
 
+QString defaultArubaRoleForSite(int siteIdx)
+{
+    // The Stations controller has exactly one allowed user role; Wynn & Encore has
+    // never had a fixed one, so it keeps the historical default as a suggestion.
+    return (siteIdx == 0) ? QStringLiteral("50Mbps-Per-User")
+                          : QStringLiteral("10mbps-Per-User");
+}
+
+bool arubaRoleIsFixedForSite(int siteIdx)
+{
+    // Stations is locked: the deploy form is read-only there and the generator
+    // ignores whatever the form holds, so no other role can reach that controller.
+    return siteIdx != 0;
+}
+
 // FIX (C++ Code): This free function replaces the duplicated config-generation
 // blocks that previously existed independently in buildConfigScript() and
 // WizardPage5::initializePage(). Both now call this function.
@@ -1077,7 +1092,9 @@ QString buildArubaConfig(const QString& ssid,
 {
     QString path = (siteIdx == 0) ? apData.wynnConfigPath : apData.stationsConfigPath;
     QString htProfile = ssid;
-    QString effectiveRole = role.trimmed().isEmpty() ? "50Mbps-Per-User" : role.trimmed();
+    QString effectiveRole = arubaRoleIsFixedForSite(siteIdx)
+        ? defaultArubaRoleForSite(siteIdx)
+        : (role.trimmed().isEmpty() ? defaultArubaRoleForSite(siteIdx) : role.trimmed());
     const QString effectiveAuth = splashPage ? "Open" : auth;
 
     QStringList config;
@@ -3296,7 +3313,7 @@ void WizardPage5::initializePage() {
 
     // FIX (C++ Code): Uses the shared buildArubaConfig() — no duplicated logic.
     configPreview->setPlainText(
-        buildArubaConfig(ssid, vlan, auth, psk, "50Mbps-Per-User", false,
+        buildArubaConfig(ssid, vlan, auth, psk, defaultArubaRoleForSite(idx), false,
             field("splash_page_aruba").toBool(),
             idx, selectedGroups, apData)
     );
@@ -3758,7 +3775,7 @@ ACS_Wynn_Builder::ACS_Wynn_Builder(QWidget* parent)
     ui->entry_path->setToolTip("Controller configuration path is managed by site policy.");
     ui->entry_essid->setPlaceholderText("Broadcast SSID");
     ui->entry_vlan->setPlaceholderText("VLAN");
-    ui->entry_role->setPlaceholderText("50Mbps-Per-User");
+    ui->entry_role->setPlaceholderText(defaultArubaRoleForSite(ui->siteTabs ? ui->siteTabs->currentIndex() : 0));
     ui->entry_user->setPlaceholderText("Username");
     ui->entry_ip->setPlaceholderText("Controller IP");
     ui->entry_ssh_pass->setPlaceholderText("Controller password");
@@ -5313,7 +5330,13 @@ void ACS_Wynn_Builder::on_btn_reset_clicked() {
     ui->entry_essid->clear();
     ui->entry_vlan->clear();
     ui->entry_psk->clear();
-    ui->entry_role->setText("50Mbps-Per-User");
+    const int roleSite = ui->siteTabs ? ui->siteTabs->currentIndex() : 0;
+    arubaWynnRole.clear();
+    ui->entry_role->setText(defaultArubaRoleForSite(roleSite));
+    ui->entry_role->setReadOnly(arubaRoleIsFixedForSite(roleSite));
+    ui->entry_role->setToolTip(arubaRoleIsFixedForSite(roleSite)
+        ? QString("Stations uses %1. The role is fixed.").arg(defaultArubaRoleForSite(roleSite))
+        : QString());
 
     ui->combo_auth->clear();
     ui->combo_auth->addItems({ "WPA2-PSK", "Open" });
@@ -5526,6 +5549,27 @@ void ACS_Wynn_Builder::on_siteTabs_currentChanged(int index) {
     else {
         ui->entry_ip->setText(apData.stationsControllerIp);
         ui->entry_path->setText(apData.stationsConfigPath);
+    }
+
+    // The ROLE policy is per site: Stations is fixed to its one allowed role and
+    // the field is read-only there, Wynn keeps a free-text field. A role typed by
+    // hand on Wynn survives a trip to the Stations tab because leaving stashes it.
+    if (ui->entry_role) {
+        if (index != 0) {
+            const QString currentRole = ui->entry_role->text().trimmed();
+            if (currentRole != defaultArubaRoleForSite(1))
+                arubaWynnRole = currentRole;
+            ui->entry_role->setText(defaultArubaRoleForSite(1));
+        } else {
+            ui->entry_role->setText(arubaWynnRole.trimmed().isEmpty()
+                ? defaultArubaRoleForSite(0)
+                : arubaWynnRole);
+        }
+        ui->entry_role->setReadOnly(arubaRoleIsFixedForSite(index));
+        ui->entry_role->setPlaceholderText(defaultArubaRoleForSite(index));
+        ui->entry_role->setToolTip(arubaRoleIsFixedForSite(index)
+            ? QString("Stations uses %1. The role is fixed.").arg(defaultArubaRoleForSite(index))
+            : QString());
     }
 
     QString siteTheme;

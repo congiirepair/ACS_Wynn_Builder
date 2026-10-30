@@ -111,6 +111,12 @@ struct DeploymentOptions {
 // SHARED CONFIG BUILDER (FIX: eliminates duplication)
 // ====================================================
 
+// The per-site user-role policy. Stations has one fixed role and a read-only
+// field; Wynn's field stays free text with a suggested default. Both the form and
+// the script generator read this so the two can never disagree.
+QString defaultArubaRoleForSite(int siteIdx);
+bool arubaRoleIsFixedForSite(int siteIdx);
+
 // FIX (C++ Code): The Aruba CLI generation logic was duplicated verbatim
 // between ACS_Wynn_Builder::buildConfigScript() and WizardPage5::initializePage().
 // It now lives here as a free function consumed by both.
@@ -469,6 +475,9 @@ private:
 
     // FIX (Architecture): All AP group data lives in one struct, kept private.
     ApGroupData apData;
+    // The Wynn ROLE text as it was when the user left that tab, so the fixed
+    // Stations role does not wipe a role typed by hand.
+    QString arubaWynnRole;
     UpdateSecurityConfig updateConfig;
     UpdateSecurityConfig testingUpdateConfig;
 
@@ -478,7 +487,7 @@ private:
     QNetworkAccessManager* downloadManager;
 
     QPushButton* btnUpdateApp = nullptr;
-    const QString CURRENT_VERSION = "2.4.5";
+    const QString CURRENT_VERSION = "2.4.6";
     // autoInstall makes the launch-time check finish the job: a newer stable
     // release is downloaded, verified and applied without a prompt.
     void checkForUpdates(bool interactive = false, bool testingChannel = false, bool autoInstall = false);
